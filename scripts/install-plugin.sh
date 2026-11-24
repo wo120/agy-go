@@ -24,4 +24,10 @@ cp -R "${REPO_ROOT}/plugin/sidecars" "${TARGET_DIR}/"
 cp -R "${REPO_ROOT}/plugin/skills" "${TARGET_DIR}/"
 chmod +x "${TARGET_DIR}/bin/agy-remote"
 
+# Gracefully terminate any running old sidecar binary so Antigravity (restart_policy: always) respawns the new build.
+if pgrep -f "bin/agy-remote sidecar" >/dev/null 2>&1; then
+  echo "[agy-remote] Restarting running sidecar process..."
+  pkill -f "bin/agy-remote sidecar" || true
+fi
+
 echo "[agy-remote] Installed successfully at ${TARGET_DIR}"
