@@ -1,0 +1,14 @@
+name: agy_client
+description: Pure Dart protocol, transport carrier, WS mux, and transcript reducer for Antigravity Mobile.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  http: ^1.2.2
+  web_socket_channel: ^3.0.1
+
+dev_dependencies:
+  test: ^1.25.0
