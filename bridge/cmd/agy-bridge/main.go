@@ -104,7 +104,8 @@ func runStatus(cfg *config.Config) {
 	reader := agyreader.New(filepath.Join(cfg.AntigravityDir, "conversation_summaries.db"))
 	watcher := brainwatcher.New(filepath.Join(cfg.AntigravityDir, "brain"), store, brainwatcher.EventCallbacks{})
 	_ = watcher.ScanAll()
-	quota, err := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, cfg.Gemini5hBudget, cfg.Gemini7dBudget, cfg.Claude5hBudget, cfg.Claude7dBudget)
+	lsProv := quotamonitor.NewLanguageServerProvider(filepath.Join(cfg.AntigravityDir, "daemon"), store)
+	quota, err := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, cfg.Gemini5hBudget, cfg.Gemini7dBudget, cfg.Claude5hBudget, cfg.Claude7dBudget, lsProv)
 	if err != nil {
 		log.Fatalf("init quota: %v", err)
 	}
@@ -140,7 +141,8 @@ func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 	_ = store.UpsertDevice("bootstrap", "Default Paired Device", config.HashToken(cfg.BootstrapToken))
 
 	reader := agyreader.New(filepath.Join(cfg.AntigravityDir, "conversation_summaries.db"))
-	quota, err := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, cfg.Gemini5hBudget, cfg.Gemini7dBudget, cfg.Claude5hBudget, cfg.Claude7dBudget)
+	lsProv := quotamonitor.NewLanguageServerProvider(filepath.Join(cfg.AntigravityDir, "daemon"), store)
+	quota, err := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, cfg.Gemini5hBudget, cfg.Gemini7dBudget, cfg.Claude5hBudget, cfg.Claude7dBudget, lsProv)
 	if err != nil {
 		log.Fatalf("init quota monitor: %v", err)
 	}

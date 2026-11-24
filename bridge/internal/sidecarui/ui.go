@@ -263,7 +263,7 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   <div class="card">
     <div class="row" style="margin-bottom:8px">
       <div class="title" style="font-size:13.5px">模型配额监控 (5h / 7d)</div>
-      <span class="muted" id="subTier">Google AI Ultra</span>
+      <span class="muted" id="subTier">检测中...</span>
     </div>
     <div id="quotaBox"></div>
   </div>

@@ -198,7 +198,8 @@ func (s *Server) toolStatus(ctx context.Context) (string, bool) {
 
 	watcher := brainwatcher.New(filepath.Join(s.cfg.AntigravityDir, "brain"), st, brainwatcher.EventCallbacks{})
 	_ = watcher.ScanAll()
-	quota, _ := quotamonitor.NewMonitor(st, s.cfg.SubscriptionTier, s.cfg.Gemini5hBudget, s.cfg.Gemini7dBudget, s.cfg.Claude5hBudget, s.cfg.Claude7dBudget)
+	lsProv := quotamonitor.NewLanguageServerProvider(filepath.Join(s.cfg.AntigravityDir, "daemon"), st)
+	quota, _ := quotamonitor.NewMonitor(st, s.cfg.SubscriptionTier, s.cfg.Gemini5hBudget, s.cfg.Gemini7dBudget, s.cfg.Claude5hBudget, s.cfg.Claude7dBudget, lsProv)
 	snap, _ := quota.Snapshot(ctx)
 	reader := agyreader.New(filepath.Join(s.cfg.AntigravityDir, "conversation_summaries.db"))
 	recent, _ := reader.ListRootSummaries(5)

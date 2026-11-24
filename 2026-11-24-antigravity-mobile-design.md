@@ -222,7 +222,7 @@ type PoolQuota struct {
     Source         string `json:"source"`         // "direct" | "ledger" | "gateway"
 }
 ```
-1. **Provider 优先级链**：`DirectOrGatewayProvider`（若配置了外部网关配额接口或读取到本地明确配额快照）优先；未提供时自动回退至 `LedgerWindowProvider`。
+1. **Provider 优先级链**：`LanguageServerProvider` 优先（通过本机回环调用官方 `LanguageServerService/GetUserStatus`，直读真实 `userTier.name` 订阅等级与各模型池权威 `remainingFraction` / `resetTime`，并支持自定义外部网关 Provider）；当桌面端未运行时自动回退至 `LedgerWindowProvider`。
 2. **本地滑动窗口与校准计算（`LedgerWindowProvider`）**：
    - `brainwatcher` 每监听到新的 `PLANNER_RESPONSE`，按 `model` 名称归类写入 `usage_ledger`（包含 `gemini` 前缀归入 `gemini` 池，包含 `claude` / `gpt` / `o1` / `o3` 归入 `claude_gpt` 池），计算等效消耗权重 `cost = input_tokens + output_tokens * 4 + cache_read_tokens / 10`（同时保留请求次数统计）。
    - 对任一时间窗口 $W \in \{5\text{h}, 7\text{d}\}$：查询 `created_at_unix >= now - W` 内的累计消耗 `usedCost` 与最早一条记录时间 `oldestUnix`。

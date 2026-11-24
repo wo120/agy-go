@@ -127,7 +127,7 @@ class _QuotaDashboardCardState extends ConsumerState<QuotaDashboardCard> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      snap?.subscriptionTier ?? 'Google AI Ultra',
+                      snap?.subscriptionTier ?? '同步订阅中...',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w500,

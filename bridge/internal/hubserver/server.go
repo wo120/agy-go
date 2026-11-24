@@ -473,11 +473,15 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 	switch req.Method {
 	case "host.info":
 		ws, _ := s.reader.ListWorkspaces()
+		tier := s.cfg.SubscriptionTier
+		if snap, err := s.quota.Snapshot(ctx); err == nil && snap != nil && snap.SubscriptionTier != "" {
+			tier = snap.SubscriptionTier
+		}
 		return okResp(map[string]any{
 			"hostName":         s.cfg.HostName,
 			"protocolVersion":  ProtocolVersion,
 			"desktopOnline":    s.runner.IsDesktopOnline(),
-			"subscriptionTier": s.cfg.SubscriptionTier,
+			"subscriptionTier": tier,
 			"workspaces":       ws,
 		})
 
