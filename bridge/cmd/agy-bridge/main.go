@@ -234,9 +234,13 @@ func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 // runHook handles Antigravity lifecycle hooks (Stop / PostToolUse) and forwards instant alerts to the local sidecar.
 // Always prints `{}` and exits 0 quickly so it never blocks the agent execution loop.
 func runHook(cfg *config.Config, event string) {
-	defer fmt.Println("{}")
+	runHookIO(cfg, event, os.Stdin, os.Stdout)
+}
 
-	raw, _ := io.ReadAll(io.LimitReader(os.Stdin, 512*1024))
+func runHookIO(cfg *config.Config, event string, in io.Reader, out io.Writer) {
+	defer fmt.Fprintln(out, "{}")
+
+	raw, _ := io.ReadAll(io.LimitReader(in, 512*1024))
 	var input map[string]any
 	_ = json.Unmarshal(raw, &input)
 

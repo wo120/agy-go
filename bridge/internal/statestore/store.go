@@ -376,6 +376,28 @@ func (s *Store) SetWatcherOffset(convID string, offset, mtimeNs int64) error {
 	return err
 }
 
+// UpsertWebhook inserts or updates an external alert webhook endpoint.
+func (s *Store) UpsertWebhook(ep WebhookEndpoint) error {
+	en := 0
+	if ep.Enabled {
+		en = 1
+	}
+	if ep.CreatedAt == 0 {
+		ep.CreatedAt = time.Now().Unix()
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO webhook_endpoints(id, name, kind, url, auth_header, enabled, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			kind = excluded.kind,
+			url = excluded.url,
+			auth_header = excluded.auth_header,
+			enabled = excluded.enabled
+	`, ep.ID, ep.Name, ep.Kind, ep.URL, ep.AuthHeader, en, ep.CreatedAt)
+	return err
+}
+
 // ListEnabledWebhooks returns active external push webhook configurations.
 func (s *Store) ListEnabledWebhooks() ([]WebhookEndpoint, error) {
 	rows, err := s.db.Query(`SELECT id, name, kind, url, auth_header, enabled, created_at FROM webhook_endpoints WHERE enabled = 1`)

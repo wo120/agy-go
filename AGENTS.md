@@ -37,6 +37,7 @@
 
 ```bash
 ./scripts/verify.sh
+./scripts/smoke-live.sh   # 涉及运行态/接口/插件改动时追加实机冒烟
 ```
 
 若改动涉及运行态行为（如 Sidecar、MCP、Hook、配额接口），还须执行实机/本机冒烟验证，并在汇报中给出：
