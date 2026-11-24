@@ -349,6 +349,7 @@ class SessionsUiState {
     this.pinned = const [],
     this.regular = const [],
     this.groups = const [],
+    this.expandedProjectKeys = const {},
     this.loading = false,
   });
 
@@ -356,13 +357,21 @@ class SessionsUiState {
   final List<SessionCard> pinned;
   final List<SessionCard> regular;
   final List<ProjectGroup> groups;
+  final Set<String> expandedProjectKeys;
   final bool loading;
+
+  static String projectKey(WorkspaceInfo workspace) =>
+      '${workspace.kind}:${workspace.rootPath ?? workspace.label}';
+
+  bool isProjectExpanded(ProjectGroup group) =>
+      expandedProjectKeys.contains(projectKey(group.workspace));
 
   SessionsUiState copyWith({
     String? mode,
     List<SessionCard>? pinned,
     List<SessionCard>? regular,
     List<ProjectGroup>? groups,
+    Set<String>? expandedProjectKeys,
     bool? loading,
   }) {
     return SessionsUiState(
@@ -370,6 +379,7 @@ class SessionsUiState {
       pinned: pinned ?? this.pinned,
       regular: regular ?? this.regular,
       groups: groups ?? this.groups,
+      expandedProjectKeys: expandedProjectKeys ?? this.expandedProjectKeys,
       loading: loading ?? this.loading,
     );
   }
@@ -398,6 +408,15 @@ class SessionsStateNotifier extends Notifier<SessionsUiState> {
     }
     final res = await c.listSessions(mode: mode);
     applyListResult(res);
+  }
+
+  void toggleProjectExpanded(ProjectGroup group) {
+    final key = SessionsUiState.projectKey(group.workspace);
+    final next = Set<String>.from(state.expandedProjectKeys);
+    if (!next.add(key)) {
+      next.remove(key);
+    }
+    state = state.copyWith(expandedProjectKeys: next);
   }
 
   Future<void> togglePin(SessionCard card) async {

@@ -36,18 +36,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _onScroll() {
-    if (!_scrollCtrl.hasClients) return;
-    final dist = _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels;
-    final shouldShow = dist > 260;
+    if (!mounted || !_scrollCtrl.hasClients) return;
+    final shouldShow = _scrollCtrl.position.pixels > 260;
     if (shouldShow != _showScrollToBottom) {
       setState(() => _showScrollToBottom = shouldShow);
     }
   }
 
   void _scrollToBottom() {
-    if (!_scrollCtrl.hasClients) return;
+    if (!mounted || !_scrollCtrl.hasClients) return;
     _scrollCtrl.animateTo(
-      _scrollCtrl.position.maxScrollExtent,
+      0,
       duration: const Duration(milliseconds: 260),
       curve: Curves.easeOutCubic,
     );
@@ -144,10 +143,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             )
                           : ListView.builder(
                               controller: _scrollCtrl,
+                              reverse: true,
                               padding: const EdgeInsets.fromLTRB(14, 12, 14, 96),
                               itemCount: chat.rows.length,
                               itemBuilder: (ctx, idx) {
-                                final row = chat.rows[idx];
+                                final row = chat.rows[chat.rows.length - 1 - idx];
                                 return Padding(
                                   key: ValueKey(row.keyId),
                                   padding: const EdgeInsets.only(bottom: 10),

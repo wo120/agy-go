@@ -299,45 +299,76 @@ class HomeScreen extends ConsumerWidget {
   }
 
   List<Widget> _buildProjectSlivers(BuildContext context, WidgetRef ref, SessionsUiState sessions) {
+    if (sessions.groups.isEmpty) {
+      return const [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.only(top: 48),
+            child: Center(
+              child: Text('暂无 Antigravity 会话记录', style: TextStyle(color: LevityColors.textMuted)),
+            ),
+          ),
+        ),
+      ];
+    }
+
     final slivers = <Widget>[];
     for (final group in sessions.groups) {
+      final expanded = sessions.isProjectExpanded(group);
       slivers.add(
         SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
-            child: Row(
-              children: [
-                Icon(
-                  group.workspace.isGlobal ? Icons.public_rounded : Icons.folder_outlined,
-                  size: 15,
-                  color: LevityColors.purpleSubagent,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  group.workspace.label,
-                  style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: LevityColors.textPrimary),
-                ),
-                const SizedBox(width: 8),
-                Text('${group.sessions.length}', style: const TextStyle(fontSize: 12, color: LevityColors.textMuted)),
-              ],
+            padding: EdgeInsets.fromLTRB(16, 6, 16, expanded ? 8 : 4),
+            child: GlassCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              borderRadius: 14,
+              onTap: () => ref.read(sessionsStateProvider.notifier).toggleProjectExpanded(group),
+              child: Row(
+                children: [
+                  Icon(
+                    group.workspace.isGlobal ? Icons.public_rounded : Icons.folder_outlined,
+                    size: 16,
+                    color: LevityColors.purpleSubagent,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      group.workspace.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: LevityColors.textPrimary),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${group.sessions.length}', style: const TextStyle(fontSize: 12, color: LevityColors.textMuted)),
+                  const SizedBox(width: 6),
+                  Icon(
+                    expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    size: 18,
+                    color: LevityColors.textMuted,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       );
-      slivers.add(
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          sliver: SliverList.separated(
-            itemCount: group.sessions.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (ctx, idx) => SessionSummaryCard(
-              card: group.sessions[idx],
-              onTap: () => _openChat(ctx, group.sessions[idx].conversationId),
-              onLongPress: () => ref.read(sessionsStateProvider.notifier).togglePin(group.sessions[idx]),
+      if (expanded) {
+        slivers.add(
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            sliver: SliverList.separated(
+              itemCount: group.sessions.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (ctx, idx) => SessionSummaryCard(
+                card: group.sessions[idx],
+                onTap: () => _openChat(ctx, group.sessions[idx].conversationId),
+                onLongPress: () => ref.read(sessionsStateProvider.notifier).togglePin(group.sessions[idx]),
+              ),
             ),
           ),
-        ),
-      );
+        );
+      }
     }
     return slivers;
   }

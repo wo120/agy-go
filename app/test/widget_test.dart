@@ -1,6 +1,7 @@
 import 'package:agy_client/agy_client.dart';
 import 'package:agy_mobile/state/app_state.dart';
 import 'package:agy_mobile/theme/levity_theme.dart';
+import 'package:agy_mobile/ui/chat/chat_screen.dart';
 import 'package:agy_mobile/ui/home/home_screen.dart';
 import 'package:agy_mobile/ui/home/quota_card.dart';
 import 'package:flutter/material.dart';
@@ -63,6 +64,121 @@ class _FakeQuotaNotifier extends QuotaStateNotifier {
   @override
   Future<void> toggleCollapsed() async {
     state = state.copyWith(collapsed: !state.collapsed);
+  }
+}
+
+class _FakeSessionsNotifier extends SessionsStateNotifier {
+  @override
+  SessionsUiState build() {
+    const ws1 = WorkspaceInfo(
+      kind: 'workspace',
+      label: 'antigravity-mobile',
+      rootPath: '/Users/apple/go-project/ai/antigravity-mobile',
+    );
+    const ws2 = WorkspaceInfo(kind: 'global', label: '通用对话');
+    return const SessionsUiState(
+      mode: 'project',
+      groups: [
+        ProjectGroup(
+          workspace: ws1,
+          latestActiveUnix: 1795527000,
+          sessions: [
+            SessionCard(
+              conversationId: 'c1',
+              title: '会话 A1',
+              preview: '预览 A1',
+              stepCount: 3,
+              lastModifiedUnix: 1795527000,
+              workspace: ws1,
+              status: 'IDLE',
+              running: false,
+              subagentCount: 0,
+              artifactCount: 0,
+              pinned: false,
+              pinnedOrder: 0,
+              unread: false,
+              needsConfirm: false,
+            ),
+            SessionCard(
+              conversationId: 'c2',
+              title: '会话 A2',
+              preview: '预览 A2',
+              stepCount: 2,
+              lastModifiedUnix: 1795526900,
+              workspace: ws1,
+              status: 'IDLE',
+              running: false,
+              subagentCount: 0,
+              artifactCount: 0,
+              pinned: false,
+              pinnedOrder: 0,
+              unread: false,
+              needsConfirm: false,
+            ),
+          ],
+        ),
+        ProjectGroup(
+          workspace: ws2,
+          latestActiveUnix: 1795526800,
+          sessions: [
+            SessionCard(
+              conversationId: 'c3',
+              title: '会话 B1',
+              preview: '预览 B1',
+              stepCount: 1,
+              lastModifiedUnix: 1795526800,
+              workspace: ws2,
+              status: 'IDLE',
+              running: false,
+              subagentCount: 0,
+              artifactCount: 0,
+              pinned: false,
+              pinnedOrder: 0,
+              unread: false,
+              needsConfirm: false,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _FakeChatSessionNotifier extends ChatSessionNotifier {
+  @override
+  ChatSessionState build(String conversationId) {
+    final steps = [
+      for (var i = 0; i < 24; i++)
+        TranscriptStep(
+          stepIndex: i,
+          source: i.isEven ? 'USER_EXPLICIT' : 'MODEL',
+          type: i.isEven ? 'USER_INPUT' : 'PLANNER_RESPONSE',
+          status: 'DONE',
+          createdAtUnix: 1795527000 + i,
+          content: '消息 $i',
+        ),
+    ];
+    return ChatSessionState(
+      session: const SessionCard(
+        conversationId: 'c-tail',
+        title: '长会话测试',
+        preview: '消息 23',
+        stepCount: 24,
+        lastModifiedUnix: 1795527023,
+        workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+        status: 'IDLE',
+        running: false,
+        subagentCount: 0,
+        artifactCount: 0,
+        pinned: false,
+        pinnedOrder: 0,
+        unread: false,
+        needsConfirm: false,
+      ),
+      steps: steps,
+      rows: TranscriptReducer.reduce(steps),
+      loading: false,
+    );
   }
 }
 
@@ -172,5 +288,89 @@ void main() {
     await tester.tap(find.text('Google AI Pro'));
     await tester.pumpAndSettle();
     expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
+  });
+
+  testWidgets('HomeScreen project mode collapses groups by default and toggles on tap', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          quotaStateProvider.overrideWith(_FakeQuotaNotifier.new),
+          sessionsStateProvider.overrideWith(_FakeSessionsNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildLevityTheme(),
+          home: const HomeScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('antigravity-mobile'), findsOneWidget);
+    expect(find.text('通用对话'), findsOneWidget);
+    expect(find.text('会话 A1'), findsNothing);
+    expect(find.text('会话 A2'), findsNothing);
+    expect(find.text('会话 B1'), findsNothing);
+    expect(find.byIcon(Icons.expand_more_rounded), findsNWidgets(2));
+
+    await tester.tap(find.text('antigravity-mobile'));
+    await tester.pumpAndSettle();
+    expect(find.text('会话 A1'), findsOneWidget);
+    expect(find.text('会话 B1'), findsNothing);
+    expect(find.byIcon(Icons.expand_less_rounded), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('会话 A2'),
+      150,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('会话 A2'), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.text('通用对话'),
+      150,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.byIcon(Icons.expand_more_rounded), findsOneWidget);
+    expect(find.text('会话 B1'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.byIcon(Icons.expand_less_rounded),
+      -150,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byIcon(Icons.expand_less_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('会话 A1'), findsNothing);
+    expect(find.text('会话 A2'), findsNothing);
+  });
+
+  testWidgets('ChatScreen defaults scroll position to tail and supports scroll-to-bottom button', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(_FakeChatSessionNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildLevityTheme(),
+          home: const ChatScreen(conversationId: 'c-tail'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('消息 23'), findsOneWidget);
+    expect(find.text('消息 0'), findsNothing);
+    expect(find.byIcon(Icons.keyboard_double_arrow_down_rounded), findsNothing);
+
+    await tester.drag(find.byType(ListView), const Offset(0, 1000));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.keyboard_double_arrow_down_rounded), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.keyboard_double_arrow_down_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('消息 23'), findsOneWidget);
+    expect(find.byIcon(Icons.keyboard_double_arrow_down_rounded), findsNothing);
   });
 }
