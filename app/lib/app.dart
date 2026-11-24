@@ -1,0 +1,40 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'state/native_bridge.dart';
+import 'theme/levity_theme.dart';
+import 'ui/chat/chat_screen.dart';
+import 'ui/home/home_screen.dart';
+
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
+class AgyMobileApp extends ConsumerStatefulWidget {
+  const AgyMobileApp({super.key});
+
+  @override
+  ConsumerState<AgyMobileApp> createState() => _AgyMobileAppState();
+}
+
+class _AgyMobileAppState extends ConsumerState<AgyMobileApp> {
+  @override
+  void initState() {
+    super.initState();
+    NativeBridge.instance.init();
+    NativeBridge.instance.onNotificationTap = (conversationId) {
+      rootNavigatorKey.currentState?.push(
+        MaterialPageRoute(builder: (_) => ChatScreen(conversationId: conversationId)),
+      );
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      navigatorKey: rootNavigatorKey,
+      title: 'Levity for Antigravity',
+      debugShowCheckedModeBanner: false,
+      theme: buildLevityTheme(),
+      home: const HomeScreen(),
+    );
+  }
+}
