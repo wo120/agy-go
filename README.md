@@ -47,15 +47,14 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 
 ---
 
-## 4. 运行全栈测试
+## 4. 工程工作流与全栈测试
+
+本项目默认采用 **Lauren（pstack）工程纪律流**，完整原则、Playbook、快捷口令与门禁说明见：[docs/lauren-workflow-guide.md](docs/lauren-workflow-guide.md)。
 
 ```bash
-# Go 插件后端（含 Sidecar UI、MCP、Hook、配额、沙箱）
-cd bridge && GOTOOLCHAIN=local go test -v ./...
+# 一键全栈 Done Gate 门禁（Go vet/race + 插件守卫 + Dart + Flutter）
+./scripts/verify.sh
 
-# 纯 Dart 协议包
-cd app/packages/agy_client && dart test
-
-# Flutter 静态分析与 Widget 测试
-cd app && flutter --no-version-check --suppress-analytics analyze && flutter --no-version-check --suppress-analytics test
+# 本机运行态 Sidecar 实测冒烟
+./scripts/smoke-live.sh
 ```
