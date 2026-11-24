@@ -1,0 +1,11 @@
+analyzer:
+  language:
+    strict-raw-types: false
+
+linter:
+  rules:
+    avoid_print: true
+    prefer_const_constructors: true
+    prefer_const_declarations: true
+    prefer_final_locals: true
+    unnecessary_this: true

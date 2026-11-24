@@ -10,4 +10,5 @@ app/packages/agy_client/pubspec.lock
 app/pubspec.lock
 app/android/local.properties
 app/android/.gradle/
+.code-review-graph/
 .DS_Store

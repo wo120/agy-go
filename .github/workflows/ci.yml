@@ -1,0 +1,56 @@
+name: CI Done Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go-bridge-and-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: bridge/go.sum
+      - name: Go vet and race tests
+        working-directory: bridge
+        run: |
+          go vet ./...
+          go test -race -v ./...
+      - name: Validate plugin manifests & guardrails
+        run: |
+          python3 - . <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          plugin_dir = root / "plugin"
+          allowed = {"name", "displayName", "version", "description", "logo", "suggestedPrompts", "author", "homepage", "repository", "disabled"}
+          pj = json.loads((plugin_dir / "plugin.json").read_text("utf-8"))
+          assert not (set(pj) - allowed), f"unknown keys: {set(pj) - allowed}"
+          assert (plugin_dir / pj["logo"]).is_file()
+          for rel in ["hooks.json", "mcp_config.json", "sidecars/remote/sidecar.json"]:
+              assert isinstance(json.loads((plugin_dir / rel).read_text("utf-8")), dict)
+          PY
+
+  dart-and-flutter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Pure Dart agy_client analyze & test
+        working-directory: app/packages/agy_client
+        run: |
+          dart pub get
+          dart analyze --fatal-infos
+          dart test
+      - name: Flutter analyze & widget test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
