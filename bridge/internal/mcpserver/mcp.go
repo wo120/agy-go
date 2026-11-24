@@ -146,7 +146,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "agy_remote_pairing_info",
-			"description": "Return the mobile pairing endpoints and QR pairing instructions for connecting the Android Levity app to this Mac.",
+			"description": "Return the mobile pairing endpoints and QR pairing instructions for connecting the Android AGY Go app to this Mac.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{

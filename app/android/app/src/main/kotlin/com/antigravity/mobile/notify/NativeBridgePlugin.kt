@@ -58,7 +58,7 @@ object NativeBridgePlugin : MethodChannel.MethodCallHandler {
                 val alertId = call.argument<String>("alertId") ?: ""
                 val kind = call.argument<String>("kind") ?: "TASK_COMPLETED"
                 val convId = call.argument<String>("conversationId") ?: ""
-                val title = call.argument<String>("title") ?: "Levity for Antigravity"
+                val title = call.argument<String>("title") ?: "AGY Go"
                 val workspace = call.argument<String>("workspace") ?: ""
                 val body = call.argument<String>("body") ?: ""
                 val quickReplies = call.argument<List<String>>("quickReplies") ?: emptyList()

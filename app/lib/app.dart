@@ -31,7 +31,7 @@ class _AgyMobileAppState extends ConsumerState<AgyMobileApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: rootNavigatorKey,
-      title: 'Levity for Antigravity',
+      title: 'AGY Go',
       debugShowCheckedModeBanner: false,
       theme: buildLevityTheme(),
       home: const HomeScreen(),

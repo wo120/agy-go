@@ -258,7 +258,7 @@ func (s *Server) handleInternalHook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if title == "" {
-		title = "Levity for Antigravity"
+		title = "AGY Go"
 	}
 	kind := payload.Kind
 	if kind == "" {

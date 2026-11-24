@@ -63,10 +63,10 @@ object AlertNotifier {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val subText = if (workspace.isNotEmpty()) "Levity · $workspace" else "Levity for Antigravity"
+        val subText = if (workspace.isNotEmpty()) "AGY Go · $workspace" else "AGY Go"
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title.ifEmpty { "Levity for Antigravity" })
+            .setContentTitle(title.ifEmpty { "AGY Go" })
             .setSubText(subText)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

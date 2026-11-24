@@ -1,4 +1,4 @@
-# Antigravity Mobile（`agy-remote` 原生插件 + Levity 安卓端）
+# AGY Go（`agy-remote` 原生插件 + Android 互通端）
 
 将 macOS 上的 **Google Antigravity** 以**原生插件形式**延伸到 Android 手机的远程控制台与随身 Agent 客户端：
 - **Mac 端 Antigravity 原生插件 `agy-remote`（`plugin/` + `bridge/`）**：

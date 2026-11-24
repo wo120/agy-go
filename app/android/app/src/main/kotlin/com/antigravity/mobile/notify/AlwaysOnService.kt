@@ -60,7 +60,7 @@ class AlwaysOnService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Levity for Antigravity")
+            .setContentTitle("AGY Go")
             .setContentText(status)
             .setOngoing(true)
             .setSilent(true)

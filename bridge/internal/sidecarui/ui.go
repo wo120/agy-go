@@ -249,7 +249,7 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   <div class="card">
     <div class="row">
       <div class="title" style="font-size:13.5px">Android / 移动端扫码直连</div>
-      <span class="muted">Levity App</span>
+      <span class="muted">AGY Go App</span>
     </div>
     <div class="qr-wrap" id="qrBox"><span style="color:#333;font-size:12px">生成二维码中...</span></div>
     <div id="endpointsBox"></div>
