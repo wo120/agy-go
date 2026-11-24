@@ -1,47 +1,40 @@
-# Antigravity Mobile（Levity 风格安卓互通端）
+# Antigravity Mobile（`agy-remote` 原生插件 + Levity 安卓端）
 
-将 macOS 上的 **Google Antigravity** 延伸到 Android 手机的远程控制台与随身 Agent 客户端：
-- **Mac 端 `bridge/`（Go 单二进制）**：只读读取 `conversation_summaries.db`（含子代理统计与原生 FTS5 搜索）、增量监听 `brain/` 会话流与产物、双模 `5h/7d` 配额监控与校准、安全白名单预览本地 `file:///` 文件、调用官方 `bin/agentapi` 发送指令/新建会话。
-- **Android 端 `app/`（Flutter + Kotlin 原生层）**：深色流光毛玻璃 UI、局域网/Tailscale 多路竞速直连与 RTT 显示、可折叠配额仪表盘、思考/工具过程自动折叠、原生产物/图片预览、单手盲操气泡，以及 Android 前台保活服务与通知栏 `RemoteInput` 直接回复。
+将 macOS 上的 **Google Antigravity** 以**原生插件形式**延伸到 Android 手机的远程控制台与随身 Agent 客户端：
+- **Mac 端 Antigravity 原生插件 `agy-remote`（`plugin/` + `bridge/`）**：
+  - **自动托管 Sidecar + Aux Pane 面板**：启用插件自动后台运行，在 Antigravity 右侧边栏直接打开扫码配对二维码、查看在线手机数与 `5h/7d` 配额、一键测试通知与重置密钥。
+  - **Lifecycle Hooks 零延迟提醒**：挂载 `Stop` 与 `PostToolUse(ask_question)`，Agent 完成或提问时 <50ms 推送到手机。
+  - **内置 MCP 工具**：暴露 `agy_remote_status`、`agy_remote_pairing_info`、`agy_remote_notify_mobile`，让 Agent 或定时任务主动给手机发消息。
+  - **核心数据能力**：只读查询 `conversation_summaries.db`（子代理计数 + FTS5 全文搜索）、增量监听 `brain/` 会话与 Artifacts、双模 `5h/7d` 配额监控、安全白名单预览本地 `file:///` 文件、调用官方 `agentapi` 发送指令。
+- **Android 端 `app/`（Flutter + Kotlin 原生层）**：深色流光毛玻璃 UI、局域网/Tailscale 多路竞速直连、可折叠配额仪表盘、思考/工具折叠、原生产物/图片预览、单手盲操悬浮球，以及前台保活与通知栏 `RemoteInput` 直接回复。
 
 ---
 
-## 1. 启动 Mac 端桥接服务
+## 1. 一键安装 Mac 端 Antigravity 插件 `agy-remote`
 
 ```bash
-cd bridge
-GOPROXY=https://goproxy.cn,direct GOTOOLCHAIN=local go build -o bin/agy-bridge ./cmd/agy-bridge
-
-# 检查本机 Antigravity 状态与当前配额快照
-./bin/agy-bridge status
-
-# 启动守护进程并打印终端配对二维码（自动探测局域网 + Tailscale IP）
-./bin/agy-bridge serve
+cd /Users/apple/go-project/ai/antigravity-mobile
+./scripts/install-plugin.sh
 ```
 
-> 首次启动会自动在 `~/.config/antigravity-mobile/config.json` 生成随机 Bearer Token，并在 `~/.config/antigravity-mobile/bridge_state.db` 独立维护置顶/已读游标与配额账本，绝不改写 Antigravity 原生库。
+安装完成后，插件位于 `~/.gemini/config/plugins/agy-remote/`：
+1. 在 Antigravity 插件页即可看到并一键开关 **`agy-remote`**（无需手动开终端运行服务）。
+2. 打开右侧边栏 **`agy-remote`** 面板即可直接用安卓 App 扫描屏幕上的二维码完成配对。
+3. 如需脱离 Antigravity 单独命令行调试，仍支持：`~/.gemini/config/plugins/agy-remote/bin/agy-remote serve | pair | status`。
 
 ---
 
 ## 2. 编译与安装 Android APK
 
-如果本机尚未配置 Android SDK，可先安装命令行工具并配置 `ANDROID_HOME`：
-
 ```bash
-brew install --cask android-commandlinetools
-export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
-sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-```
-
-构建并安装到真机：
-
-```bash
-cd app
+cd /Users/apple/go-project/ai/antigravity-mobile/app
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+ANDROID_HOME=/opt/homebrew/share/android-sdk \
 PUB_HOSTED_URL=https://pub.flutter-io.cn \
 FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn \
-flutter --no-version-check build apk --release
+flutter --no-version-check --suppress-analytics build apk --release --target-platform android-arm64
 
-# 通过 adb 安装到已连接的小米/安卓手机
+# 安装到 USB 调试连接的安卓手机
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
@@ -54,15 +47,15 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 
 ---
 
-## 4. 运行自动化测试
+## 4. 运行全栈测试
 
 ```bash
-# Go 桥接端单测
+# Go 插件后端（含 Sidecar UI、MCP、Hook、配额、沙箱）
 cd bridge && GOTOOLCHAIN=local go test -v ./...
 
-# 纯 Dart 协议包单测
+# 纯 Dart 协议包
 cd app/packages/agy_client && dart test
 
 # Flutter 静态分析与 Widget 测试
-cd app && flutter --no-version-check analyze && flutter --no-version-check test
+cd app && flutter --no-version-check --suppress-analytics analyze && flutter --no-version-check --suppress-analytics test
 ```

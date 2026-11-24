@@ -1,4 +1,5 @@
 bridge/bin/
+plugin/bin/
 *.db-shm
 *.db-wal
 app/.dart_tool/

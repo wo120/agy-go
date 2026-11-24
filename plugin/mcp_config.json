@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agy-remote": {
+      "command": "${PLUGIN_ROOT}/bin/agy-remote",
+      "args": ["mcp"]
+    }
+  }
+}

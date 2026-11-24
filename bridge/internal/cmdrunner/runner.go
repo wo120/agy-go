@@ -86,6 +86,18 @@ func (r *Runner) IsDesktopOnline() bool {
 	return err == nil
 }
 
+func (r *Runner) resolveAgentAPICmd(subArgs []string) (string, []string, error) {
+	if exe := strings.TrimSpace(os.Getenv("ANTIGRAVITY_AGENTAPI_EXE")); exe != "" {
+		if _, err := os.Stat(exe); err == nil {
+			return exe, append([]string{"agentapi"}, subArgs...), nil
+		}
+	}
+	if _, err := os.Stat(r.agentAPIBin); err == nil {
+		return r.agentAPIBin, subArgs, nil
+	}
+	return "", nil, ErrBinaryMissing
+}
+
 // NewConversation creates a new Antigravity conversation via official `agentapi new-conversation`.
 func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOptions) (*CommandResult, error) {
 	prompt := strings.TrimSpace(opts.Prompt)
@@ -95,9 +107,6 @@ func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOption
 	addr, err := r.discoverActiveAddress()
 	if err != nil {
 		return nil, err
-	}
-	if _, err := os.Stat(r.agentAPIBin); err != nil {
-		return nil, ErrBinaryMissing
 	}
 
 	args := []string{"new-conversation"}
@@ -112,10 +121,15 @@ func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOption
 	}
 	args = append(args, prompt)
 
+	bin, execArgs, err := r.resolveAgentAPICmd(args)
+	if err != nil {
+		return nil, err
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	out, err := r.exec.Run(runCtx, r.agentAPIBin, args, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, opts.WorkspacePath)
+	out, err := r.exec.Run(runCtx, bin, execArgs, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, opts.WorkspacePath)
 	raw := strings.TrimSpace(string(out))
 	if err != nil {
 		return nil, fmt.Errorf("agentapi new-conversation failed: %s (%w)", raw, err)
@@ -144,15 +158,16 @@ func (r *Runner) SendMessage(ctx context.Context, conversationID, content string
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(r.agentAPIBin); err != nil {
-		return nil, ErrBinaryMissing
+
+	bin, execArgs, err := r.resolveAgentAPICmd([]string{"send-message", conversationID, content})
+	if err != nil {
+		return nil, err
 	}
 
-	args := []string{"send-message", conversationID, content}
 	runCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	out, err := r.exec.Run(runCtx, r.agentAPIBin, args, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, "")
+	out, err := r.exec.Run(runCtx, bin, execArgs, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, "")
 	raw := strings.TrimSpace(string(out))
 	if err != nil {
 		return nil, fmt.Errorf("agentapi send-message failed: %s (%w)", raw, err)
@@ -161,6 +176,9 @@ func (r *Runner) SendMessage(ctx context.Context, conversationID, content string
 }
 
 func (r *Runner) discoverActiveAddress() (string, error) {
+	if envAddr := strings.TrimSpace(os.Getenv("ANTIGRAVITY_LS_ADDRESS")); envAddr != "" {
+		return envAddr, nil
+	}
 	matches, err := filepath.Glob(filepath.Join(r.daemonDir, "hub_*.json"))
 	if err != nil || len(matches) == 0 {
 		return "", ErrDesktopOffline

@@ -1,0 +1,12 @@
+{
+  "name": "agy-remote",
+  "displayName": "agy-remote",
+  "version": "0.2.0",
+  "description": "Remote mobile companion plugin for Google Antigravity: auto-managed Sidecar bridge with Aux Pane QR pairing dashboard, 5h/7d quota monitor, instant lifecycle hook alerts, and MCP remote notification tools.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "查看 agy-remote 远程桥接状态、直连地址和当前 5h/7d 配额",
+    "给我显示手机扫码配对信息并打开 agy-remote 侧边栏面板",
+    "给我的手机发送一条任务完成测试提醒"
+  ]
+}

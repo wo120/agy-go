@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,8 +23,10 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/cmdrunner"
 	"github.com/antigravity-mobile/bridge/internal/config"
 	"github.com/antigravity-mobile/bridge/internal/hubserver"
+	"github.com/antigravity-mobile/bridge/internal/mcpserver"
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
+	"github.com/antigravity-mobile/bridge/internal/sidecarui"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
 )
 
@@ -36,7 +41,12 @@ func main() {
 	listen := fs.String("listen", "", "override listen address (e.g. 0.0.0.0:8765)")
 	_ = fs.Parse(os.Args[2:])
 
-	cfg, err := config.LoadOrCreate(*cfgPath)
+	resolvedCfgPath := *cfgPath
+	if resolvedCfgPath == "" {
+		resolvedCfgPath, _ = config.DefaultConfigPath()
+	}
+
+	cfg, err := config.LoadOrCreate(resolvedCfgPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -50,7 +60,19 @@ func main() {
 	case "status":
 		runStatus(cfg)
 	case "serve":
-		runServe(cfg)
+		runServe(cfg, resolvedCfgPath, false)
+	case "sidecar":
+		runServe(cfg, resolvedCfgPath, true)
+	case "mcp":
+		if err := mcpserver.New(cfg).ServeStdio(context.Background(), os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("mcp server error: %v", err)
+		}
+	case "hook":
+		event := ""
+		if fs.NArg() > 0 {
+			event = fs.Arg(0)
+		}
+		runHook(cfg, event)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -58,7 +80,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("Usage: agy-bridge <serve|pair|status> [--config=path] [--listen=0.0.0.0:8765]")
+	fmt.Println("Usage: agy-remote <serve|sidecar|mcp|hook|pair|status> [--config=path] [--listen=0.0.0.0:8765]")
 }
 
 func printPairing(cfg *config.Config) {
@@ -98,24 +120,23 @@ func runStatus(cfg *config.Config) {
 	}
 
 	out, _ := json.MarshalIndent(map[string]any{
-		"hostName":         cfg.HostName,
-		"endpoints":        config.DiscoverEndpoints(cfg.Port(), cfg.PublicEndpoints),
-		"desktopOnline":    runner.IsDesktopOnline(),
-		"recentCount":      len(list),
-		"quota":            snap,
-		"antigravityDir":   cfg.AntigravityDir,
+		"hostName":       cfg.HostName,
+		"endpoints":      config.DiscoverEndpoints(cfg.Port(), cfg.PublicEndpoints),
+		"desktopOnline":  runner.IsDesktopOnline(),
+		"recentCount":    len(list),
+		"quota":          snap,
+		"antigravityDir": cfg.AntigravityDir,
 	}, "", "  ")
 	fmt.Println(string(out))
 }
 
-func runServe(cfg *config.Config) {
+func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 	store, err := statestore.Open(cfg.StateDBPath)
 	if err != nil {
 		log.Fatalf("open state db: %v", err)
 	}
 	defer store.Close()
 
-	// Ensure bootstrap token is also indexed in paired_devices.
 	_ = store.UpsertDevice("bootstrap", "Default Paired Device", config.HashToken(cfg.BootstrapToken))
 
 	reader := agyreader.New(filepath.Join(cfg.AntigravityDir, "conversation_summaries.db"))
@@ -142,12 +163,12 @@ func runServe(cfg *config.Config) {
 
 	srv = hubserver.New(cfg, store, reader, watcher, quota, runner, notif)
 
-	log.Printf("scanning existing brain transcripts under %s ...", filepath.Join(cfg.AntigravityDir, "brain"))
+	log.Printf("[agy-remote] scanning brain transcripts under %s", filepath.Join(cfg.AntigravityDir, "brain"))
 	if err := watcher.ScanAll(); err != nil {
-		log.Printf("initial scan warning: %v", err)
+		log.Printf("[agy-remote] initial scan warning: %v", err)
 	}
 	if err := watcher.Start(); err != nil {
-		log.Printf("fs watcher start warning: %v", err)
+		log.Printf("[agy-remote] fs watcher warning: %v", err)
 	}
 	defer watcher.Stop()
 
@@ -161,26 +182,108 @@ func runServe(cfg *config.Config) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("agy-bridge listening on %s (desktopOnline=%v)", cfg.ListenAddr, runner.IsDesktopOnline())
-	printPairing(cfg)
-
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
+		log.Printf("[agy-remote] mobile bridge listening on %s (desktopOnline=%v)", cfg.ListenAddr, runner.IsDesktopOnline())
 		errCh <- httpSrv.ListenAndServe()
 	}()
+
+	var uiHTTP *http.Server
+	if sidecarMode {
+		webPort := strings.TrimSpace(os.Getenv("ANTIGRAVITY_SIDECAR_WEB_PORT"))
+		if webPort == "" {
+			webPort = strings.TrimSpace(os.Getenv("PORT"))
+		}
+		if webPort != "" {
+			uiSrv := sidecarui.New(srv, cfgPath, os.Getenv("ANTIGRAVITY_SIDECAR_UI_TOKEN"))
+			uiHTTP = &http.Server{
+				Addr:              "127.0.0.1:" + webPort,
+				Handler:           uiSrv.Handler(),
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			go func() {
+				fmt.Printf("[sidecar] listening on 127.0.0.1:%s\n", webPort)
+				errCh <- uiHTTP.ListenAndServe()
+			}()
+		}
+	} else {
+		printPairing(cfg)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-sigCh:
-		log.Printf("received %v, shutting down...", sig)
+		log.Printf("[agy-remote] received %v, shutting down...", sig)
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
 		_ = httpSrv.Shutdown(shutCtx)
+		if uiHTTP != nil {
+			_ = uiHTTP.Shutdown(shutCtx)
+		}
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			log.Fatalf("[agy-remote] server error: %v", err)
 		}
+	}
+}
+
+// runHook handles Antigravity lifecycle hooks (Stop / PostToolUse) and forwards instant alerts to the local sidecar.
+// Always prints `{}` and exits 0 quickly so it never blocks the agent execution loop.
+func runHook(cfg *config.Config, event string) {
+	defer fmt.Println("{}")
+
+	raw, _ := io.ReadAll(io.LimitReader(os.Stdin, 512*1024))
+	var input map[string]any
+	_ = json.Unmarshal(raw, &input)
+
+	convID, _ := input["conversationId"].(string)
+	hookEvent := strings.ToLower(strings.TrimSpace(event))
+	if hookEvent == "" {
+		if hn, ok := input["hookEventName"].(string); ok {
+			hookEvent = strings.ToLower(hn)
+		}
+	}
+
+	payload := map[string]any{
+		"conversationId": convID,
+	}
+
+	switch hookEvent {
+	case "stop":
+		reason, _ := input["terminationReason"].(string)
+		if reason == "USER_CANCELED" {
+			return
+		}
+		payload["event"] = "stop"
+		payload["kind"] = "TASK_COMPLETED"
+	case "post-tool-use", "posttooluse":
+		tc, _ := input["toolCall"].(map[string]any)
+		toolName, _ := tc["name"].(string)
+		if toolName != "ask_question" {
+			return
+		}
+		payload["event"] = "ask_question"
+		payload["kind"] = "NEED_CONFIRM"
+		payload["body"] = "Agent 发起了多选/决策提问，等待你的确认"
+		payload["quickReplies"] = []string{"确认，按推荐方案继续", "稍等我看一下"}
+	default:
+		return
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Proxy: nil},
+	}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%s/internal/hook", cfg.Port()), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.BootstrapToken)
+	if resp, err := client.Do(req); err == nil {
+		_ = resp.Body.Close()
 	}
 }

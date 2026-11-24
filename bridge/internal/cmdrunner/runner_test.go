@@ -30,7 +30,9 @@ func TestRunnerDiscoverAndSend(t *testing.T) {
 	r := New(fakeBin, daemonDir)
 	r.pidAliveFn = func(pid int) bool { return pid == 4242 }
 
-	// No hub json -> offline
+	// No hub json -> offline (isolate from host ANTIGRAVITY_LS_ADDRESS env during unit test)
+	t.Setenv("ANTIGRAVITY_LS_ADDRESS", "")
+	t.Setenv("ANTIGRAVITY_AGENTAPI_EXE", "")
 	if _, err := r.SendMessage(context.Background(), "conv-1", "hi"); !errors.Is(err, ErrDesktopOffline) {
 		t.Fatalf("expected ErrDesktopOffline, got %v", err)
 	}

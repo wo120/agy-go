@@ -1,0 +1,23 @@
+{
+  "agy-remote-alerts": {
+    "PostToolUse": [
+      {
+        "matcher": "ask_question",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./bin/agy-remote hook post-tool-use",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./bin/agy-remote hook stop",
+        "timeout": 3
+      }
+    ]
+  }
+}

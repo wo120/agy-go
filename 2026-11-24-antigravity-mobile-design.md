@@ -1,8 +1,8 @@
-# Antigravity 移动端互通系统（Go 桥接服务 + Flutter 安卓客户端）设计规范
+# Antigravity 移动端互通系统（`agy-remote` 插件 + Flutter 安卓客户端）设计规范
 
-- **日期**：2026-11-24
-- **目标平台**：macOS 宿主机（Go 守护服务） + Android 客户端（Flutter + Kotlin 原生层，保留 iOS 编译兼容性）
-- **参考基线**：Levity 移动端交互形态 + `ccch1mneyyy/dsh-go` 客户端分层与多路复用流式同步思想（洁净室独立实现）
+- **日期**：2026-11-24（已同步更新 Mac 端 Antigravity 原生插件架构）
+- **目标平台**：macOS 宿主机（Antigravity 原生插件 `agy-remote`，Go 单二进制驱动 Sidecar + MCP + Hooks） + Android 客户端（Flutter + Kotlin 原生层，保留 iOS 编译兼容性）
+- **参考基线**：Levity 移动端交互形态 + `ccch1mneyyy/dsh-go` 客户端分层与多路复用流式同步思想 + `liguobao/ds-harness-remote` 宿主插件一体化托管与远程工具注入模式（洁净室独立实现）
 
 ---
 
@@ -30,39 +30,32 @@
 ```text
 antigravity-mobile/
 ├── 2026-11-24-antigravity-mobile-design.md   # 本设计规范文档
-├── bridge/                                   # Mac 端 Go 守护服务（纯 Go 单二进制）
-│   ├── cmd/agy-bridge/                       # CLI 入口（serve / pair / status / service）
+├── scripts/
+│   └── install-plugin.sh                     # 一键编译 Go 二进制并部署 ~/.gemini/config/plugins/agy-remote/
+├── plugin/                                   # Antigravity 原生插件包源码（agy-remote）
+│   ├── plugin.json                           # 插件元数据清单（name: agy-remote, logo, suggestedPrompts）
+│   ├── mcp_config.json                       # 挂载 stdio MCP Server（agy_remote_* 工具集）
+│   ├── hooks.json                            # 挂载 Stop / PostToolUse(ask_question) 零延迟推送 Hook
+│   ├── assets/logo.svg                       # 插件矢量图标
+│   ├── sidecars/remote/sidecar.json          # Aux Pane 侧边栏常驻 Sidecar（restart_policy: always）
+│   ├── skills/agy-remote/SKILL.md            # 插件运行与排障技能
+│   └── rules/AGENTS.md                       # 插件常驻引导规则
+├── bridge/                                   # Mac 端 Go 核心实现（单二进制 agy-remote 多角色合一）
+│   ├── cmd/agy-bridge/                       # CLI 入口（sidecar / mcp / hook / serve / pair / status）
 │   ├── internal/
 │   │   ├── config/                           # 配置加载、Token 生成、本机 LAN/Tailscale IP 探测
 │   │   ├── agyreader/                        # 只读查询 conversation_summaries.db 与 FTS5 搜索
 │   │   ├── brainwatcher/                     # fsnotify + 字节偏移增量监听 transcript 与产物目录
-│   │   ├── cmdrunner/                        # 发现活跃守护地址并封装调用官方 bin/agentapi
+│   │   ├── cmdrunner/                        # 优先复用宿主注入的 ANTIGRAVITY_AGENTAPI_EXE / LS_ADDRESS，兜底扫描 daemon/hub_*.json
 │   │   ├── statestore/                       # 独立侧挂 SQLite（bridge_state.db）读写
 │   │   ├── quotamonitor/                     # 可插拔双模 5h/7d 配额监控与校准引擎
 │   │   ├── filesandbox/                      # Artifacts 与工作区 file:// 白名单安全读取器
 │   │   ├── notifier/                         # 告警判定器与可选外部 Webhook/ntfy 转发器
-│   │   └── hubserver/                        # HTTP REST + /api/v1/mux WebSocket 多路复用网关
+│   │   ├── sidecarui/                        # Antigravity Aux Pane 深色毛玻璃控制面板（含 SVG 二维码与测试推送）
+│   │   ├── mcpserver/                        # 标准 JSON-RPC 2.0 stdio MCP Server（agy_remote_*）
+│   │   └── hubserver/                        # HTTP REST + /api/v1/mux WS 网关 + /internal/hook 本地回调
 │   └── go.mod
-└── app/                                      # Flutter 客户端工程
-    ├── packages/
-    │   └── agy_client/                       # 零 Flutter 依赖的纯 Dart 协议包（Carrier/RPC/Mux/Reducer）
-    ├── lib/
-    │   ├── main.dart
-    │   ├── app.dart
-    │   ├── state/                            # Riverpod 手写 Notifier（严格单一状态 Owner）
-    │   ├── theme/                            # 深色流光毛玻璃主题、颜色 Token 与页面转场
-    │   └── ui/
-    │       ├── home/                         # 顶栏胶囊、可折叠配额卡片、双模式会话列表
-    │       ├── chat/                         # 流式会话页、折叠过程条、单手盲操悬浮气泡
-    │       ├── artifacts/                    # Markdown / 代码高亮 / 图片缩放预览器与产物抽屉
-    │       ├── search/                       # FTS5 全文搜索页
-    │       ├── alerts/                       # 跨会话通知中心页
-    │       └── pairing/                      # 扫码配对与多节点管理页
-    └── android/app/src/main/kotlin/.../notify/
-        ├── NativeBridgePlugin.kt             # MethodChannel (agy/native) 桥接入口
-        ├── AlwaysOnService.kt                # Android 常驻轻量前台保活服务
-        ├── AlertNotifier.kt                  # 高优系统通知与 RemoteInput 构建器
-        └── AlertActionReceiver.kt            # 通知栏直接回复与快捷审批广播接收器
+└── app/                                      # Flutter 客户端工程（同前）
 ```
 
 ### 2.2 端到端连接与数据流拓扑
@@ -78,13 +71,19 @@ flowchart LR
         State <-->|"MethodChannel"| FG
     end
 
-    subgraph Mac["macOS 宿主机"]
-        Bridge["Go Bridge 守护进程"]
+    subgraph Mac["macOS 宿主机（Antigravity 原生插件 agy-remote）"]
+        SidecarUI["Aux Pane 侧边栏面板<br/>(127.0.0.1:$ANTIGRAVITY_SIDECAR_WEB_PORT)"]
+        MCP["stdio MCP Server<br/>(agy_remote_*)"]
+        Hooks["Lifecycle Hooks<br/>(Stop / PostToolUse)"]
+        Bridge["agy-remote Sidecar 进程<br/>(0.0.0.0:8765)"]
         StateDB[("bridge_state.db<br/>(侧挂扩展状态)")]
         AgyDB[("conversation_summaries.db<br/>(原生只读 SQLite + FTS5)")]
         BrainDir[("brain/&lt;conv-id&gt;/<br/>transcript.jsonl &amp; Artifacts")]
-        AgentCLI["官方 bin/agentapi"]
+        AgentCLI["官方 agentapi<br/>(优先使用宿主注入 env)"]
 
+        SidecarUI --- Bridge
+        Hooks -->|"POST /internal/hook (<50ms)"| Bridge
+        MCP -->|"状态查询 / 主动推送"| Bridge
         Bridge <--> StateDB
         Bridge -->|"mode=ro"| AgyDB
         Bridge -->|"fsnotify + Offset"| BrainDir
@@ -241,6 +240,22 @@ type PoolQuota struct {
 4. **体积保护与流式分类**：
    - 图片/音频/PDF 等媒体走 `GET /api/v1/files/raw?convId=...&path=...`（支持 HTTP `Range` 请求与 ETag 缓存，单文件上限 20MB）。
    - Markdown / 代码 / 纯文本走 `GET /api/v1/files/content?convId=...&path=...&offset=0&limit=524288`：单次最多返回 `512KB` UTF-8 文本，超出时标记 `truncated: true` 与 `totalBytes`，供客户端按需加载后续分块。
+
+### 4.5 Antigravity 原生插件化集成（`agy-remote`）
+借鉴 `liguobao/ds-harness-remote` 将远程桥接直接托管于宿主插件生命周期的思想，Mac 端以标准 Antigravity 插件形态部署至 `~/.gemini/config/plugins/agy-remote/`，单一 Go 二进制 `bin/agy-remote` 承担 4 种运行角色（仍保留 `serve / pair / status` 独立 CLI 兼容）：
+
+1. **托管常驻 Sidecar + Aux Pane UI 面板（`sidecars/remote/sidecar.json`）**：
+   - 配置 `"restart_policy": "always"` 与 `SIDECAR_UI_ENTRYPOINT_AUX_PANE`，随 Antigravity 启动自动拉起、关闭插件自动退出，免去手动开终端或写 `launchd` 配置。
+   - 同时监听 `0.0.0.0:8765`（服务手机 App）与 `127.0.0.1:$ANTIGRAVITY_SIDECAR_WEB_PORT`（服务 Antigravity 侧边栏，校验 `x-sidecar-token`）。
+   - 在侧边栏 `[agy-remote](sidecar://agy-remote/remote/)` 中直接渲染高清 SVG 扫码二维码、LAN/Tailscale 直连端点、在线手机计数、`5h/7d` 配额实时进度条、一键复制配对 JSON、一键重置 Token 与一键测试推送按钮。
+   - 自动优先复用 Antigravity 注入的 `ANTIGRAVITY_AGENTAPI_EXE` 与 `ANTIGRAVITY_LS_ADDRESS`，独立运行模式下自动回退扫描 `~/.gemini/antigravity/daemon/hub_*.json`。
+2. **Lifecycle Hooks 零延迟推送（`hooks.json`）**：
+   - 在插件根目录注册 `Stop` 与 `PostToolUse(matcher: "ask_question")` 命令 Hook（`./bin/agy-remote hook <event>`，3 秒超时，始终输出 `{}` 绝不阻塞 Agent 循环）。
+   - 当 Agent 回合结束或发起提问时，Hook 通过本机回环直连 `POST http://127.0.0.1:8765/internal/hook` 触发 WebSocket `alert` 广播，将手机推送延迟从秒级轮询缩短至 50ms 以内。
+3. **内置 stdio MCP Server（`mcp_config.json`）**：
+   - 通过 `${PLUGIN_ROOT}/bin/agy-remote mcp` 暴露三个 `agy_remote_` 前缀工具：`agy_remote_status`（健康与配额诊断）、`agy_remote_pairing_info`（配对信息引导）、`agy_remote_notify_mobile`（允许 Agent 或 `/schedule` 定时任务主动向手机发送带快捷回复按钮的高优推送，例如早安简报、作息提醒与里程碑确认）。
+4. **插件级 Skill 与 Rules（`skills/agy-remote/SKILL.md`、`rules/AGENTS.md`）**：
+   - 指导 Agent 优先通过 MCP 工具与 `[agy-remote](sidecar://agy-remote/remote/)` 侧边栏协助用户完成配对、状态排查和手机主动触达。
 
 ---
 

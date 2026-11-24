@@ -160,7 +160,132 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/files/content", s.withAuth(s.handleFileContent))
 	mux.HandleFunc("/api/v1/files/raw", s.withAuth(s.handleFileRaw))
 	mux.HandleFunc("/api/v1/mux", s.handleMuxWS)
+	mux.HandleFunc("/internal/hook", s.withAuth(s.handleInternalHook))
 	return mux
+}
+
+// ConnectedClientCount returns the number of authenticated mobile WebSocket clients.
+func (s *Server) ConnectedClientCount() int {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	count := 0
+	for c := range s.clients {
+		if c.authed {
+			count++
+		}
+	}
+	return count
+}
+
+// TriggerCustomAlert publishes an immediate alert (from Antigravity hooks, MCP tools, or Sidecar test button).
+func (s *Server) TriggerCustomAlert(al notifier.Alert) {
+	if al.AlertID == "" {
+		al.AlertID = fmt.Sprintf("alt_%d", time.Now().UnixNano())
+	}
+	if al.Kind == "" {
+		al.Kind = "NEED_CONFIRM"
+	}
+	if al.CreatedAt == 0 {
+		al.CreatedAt = time.Now().Unix()
+	}
+	s.emitAlert(al)
+}
+
+// RotateBootstrapToken generates a fresh pairing token, persists it to configPath, and updates paired_devices.
+func (s *Server) RotateBootstrapToken(configPath string) (string, error) {
+	tok, err := config.GenerateToken()
+	if err != nil {
+		return "", err
+	}
+	s.cfg.BootstrapToken = tok
+	_ = s.store.UpsertDevice("bootstrap", "Default Paired Device", config.HashToken(tok))
+	if configPath != "" {
+		if err := config.Save(configPath, s.cfg); err != nil {
+			return "", err
+		}
+	}
+	return tok, nil
+}
+
+// StatusSummary builds a live telemetry snapshot for the Antigravity Sidecar UI and MCP tools.
+func (s *Server) StatusSummary(ctx context.Context) map[string]any {
+	snap, _ := s.quota.Snapshot(ctx)
+	payload := s.cfg.BuildPairingPayload(s.cfg.BootstrapToken)
+	return map[string]any{
+		"hostName":         s.cfg.HostName,
+		"listenAddr":       s.cfg.ListenAddr,
+		"desktopOnline":    s.runner.IsDesktopOnline(),
+		"connectedClients": s.ConnectedClientCount(),
+		"endpoints":        payload.Endpoints,
+		"pairing":          payload,
+		"quota":            snap,
+		"recentAlerts":     s.notifier.Recent(10),
+	}
+}
+
+func (s *Server) handleInternalHook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errResp("METHOD_NOT_ALLOWED", "POST required"))
+		return
+	}
+	var payload struct {
+		Event          string   `json:"event"` // "stop" | "ask_question" | "notify"
+		ConversationID string   `json:"conversationId"`
+		Title          string   `json:"title"`
+		Workspace      string   `json:"workspace"`
+		Body           string   `json:"body"`
+		Kind           string   `json:"kind"`
+		QuickReplies   []string `json:"quickReplies"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512*1024)).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusOK, errResp("INVALID_ARGS", "invalid hook payload"))
+		return
+	}
+
+	title := payload.Title
+	workspace := payload.Workspace
+	if payload.ConversationID != "" && (title == "" || workspace == "") {
+		if card, err := s.buildSessionCard(payload.ConversationID); err == nil {
+			if title == "" {
+				title = card.Title
+			}
+			if workspace == "" {
+				workspace = card.Workspace.Label
+			}
+			if payload.Body == "" && card.Preview != "" {
+				payload.Body = card.Preview
+			}
+		}
+	}
+	if title == "" {
+		title = "Levity for Antigravity"
+	}
+	kind := payload.Kind
+	if kind == "" {
+		if payload.Event == "ask_question" {
+			kind = "NEED_CONFIRM"
+		} else {
+			kind = "TASK_COMPLETED"
+		}
+	}
+	body := payload.Body
+	if body == "" {
+		if kind == "NEED_CONFIRM" {
+			body = "Agent 正在等待你的决策确认"
+		} else {
+			body = "本轮任务已执行完成，点击查看最新回复与产物"
+		}
+	}
+
+	s.TriggerCustomAlert(notifier.Alert{
+		Kind:           kind,
+		ConversationID: payload.ConversationID,
+		Title:          title,
+		Workspace:      workspace,
+		Body:           body,
+		QuickReplies:   payload.QuickReplies,
+	})
+	writeJSON(w, http.StatusOK, okResp(map[string]any{"notified": true, "clients": s.ConnectedClientCount()}))
 }
 
 // OnStepsAppended bridges brainwatcher updates onto active WS channels and alert triggers.
