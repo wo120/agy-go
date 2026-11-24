@@ -12,3 +12,8 @@ app/android/local.properties
 app/android/.gradle/
 .code-review-graph/
 .DS_Store
+docs/
+.agent/
+.agents/
+.github/
+AGENTS.md
