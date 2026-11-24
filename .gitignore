@@ -8,4 +8,5 @@ app/packages/agy_client/.dart_tool/
 app/packages/agy_client/pubspec.lock
 app/pubspec.lock
 app/android/local.properties
+app/android/.gradle/
 .DS_Store
