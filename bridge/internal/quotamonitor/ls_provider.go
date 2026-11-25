@@ -88,6 +88,22 @@ type getUserStatusResp struct {
 	} `json:"userStatus"`
 }
 
+type retrieveQuotaSummaryResp struct {
+	Response struct {
+		Groups []struct {
+			DisplayName string `json:"displayName"`
+			Description string `json:"description"`
+			Buckets     []struct {
+				BucketID          string  `json:"bucketId"`
+				DisplayName       string  `json:"displayName"`
+				Window            string  `json:"window"` // "weekly" | "5h"
+				RemainingFraction float64 `json:"remainingFraction"`
+				ResetTime         string  `json:"resetTime"`
+			} `json:"buckets"`
+		} `json:"groups"`
+	} `json:"response"`
+}
+
 // Fetch retrieves live subscription tier and real Gemini / Claude·GPT quota pools from Antigravity LS.
 func (p *LanguageServerProvider) Fetch(ctx context.Context, now time.Time) (*QuotaSnapshot, error) {
 	p.mu.Lock()
@@ -127,7 +143,9 @@ func (p *LanguageServerProvider) Fetch(ctx context.Context, now time.Time) (*Quo
 		return nil, err
 	}
 
-	snap := p.buildSnapshot(&raw, now)
+	summary, _ := p.fetchQuotaSummary(ctx, addr, csrf)
+
+	snap := p.buildSnapshot(&raw, summary, now)
 	if len(snap.Pools) == 0 {
 		return nil, errors.New("no quota pools returned by GetUserStatus")
 	}
@@ -139,6 +157,35 @@ func (p *LanguageServerProvider) Fetch(ctx context.Context, now time.Time) (*Quo
 	return snap, nil
 }
 
+func (p *LanguageServerProvider) fetchQuotaSummary(ctx context.Context, addr, csrf string) (*retrieveQuotaSummaryResp, error) {
+	url := fmt.Sprintf("http://%s/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary", addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if csrf != "" {
+		req.Header.Set("x-codeium-csrf-token", csrf)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RetrieveUserQuotaSummary HTTP %d", resp.StatusCode)
+	}
+	var out retrieveQuotaSummaryResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if len(out.Response.Groups) == 0 {
+		return nil, errors.New("empty quota summary groups")
+	}
+	return &out, nil
+}
+
 // InvalidateCache clears the short TTL cache (e.g. after manual calibration or refresh).
 func (p *LanguageServerProvider) InvalidateCache() {
 	p.mu.Lock()
@@ -146,7 +193,7 @@ func (p *LanguageServerProvider) InvalidateCache() {
 	p.mu.Unlock()
 }
 
-func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, now time.Time) *QuotaSnapshot {
+func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, summary *retrieveQuotaSummaryResp, now time.Time) *QuotaSnapshot {
 	tier := strings.TrimSpace(raw.UserStatus.UserTier.Name)
 	if tier == "" {
 		tier = strings.TrimSpace(raw.UserStatus.PlanStatus.PlanInfo.PlanName)
@@ -221,6 +268,15 @@ func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, now time.
 	}
 
 	nowUnix := now.Unix()
+	if summaryPools := buildPoolsFromQuotaSummary(summary); len(summaryPools) > 0 {
+		return &QuotaSnapshot{
+			SubscriptionTier: tier,
+			UpdatedAt:        nowUnix,
+			Pools:            summaryPools,
+			Models:           models,
+		}
+	}
+
 	pools := make([]PoolQuota, 0, len(defs))
 	for _, d := range defs {
 		b := buckets[d.id]
@@ -279,6 +335,118 @@ func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, now time.
 		Pools:            pools,
 		Models:           models,
 	}
+}
+
+func parseResetTimestamp(raw string) *int64 {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		u := t.Unix()
+		return &u
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		u := t.Unix()
+		return &u
+	}
+	return nil
+}
+
+func buildPoolsFromQuotaSummary(summary *retrieveQuotaSummaryResp) []PoolQuota {
+	if summary == nil || len(summary.Response.Groups) == 0 {
+		return nil
+	}
+
+	type windowState struct {
+		seen    bool
+		frac    float64
+		pct     int
+		resetAt *int64
+	}
+	type poolState struct {
+		w5 windowState
+		w7 windowState
+	}
+
+	parsed := map[string]*poolState{
+		"gemini":     {},
+		"claude_gpt": {},
+	}
+
+	for _, g := range summary.Response.Groups {
+		poolID := classifyConfigPool(g.DisplayName, g.Description)
+		for _, b := range g.Buckets {
+			bid := strings.ToLower(strings.TrimSpace(b.BucketID))
+			if strings.HasPrefix(bid, "3p-") || strings.Contains(bid, "claude") || strings.Contains(bid, "gpt") {
+				poolID = "claude_gpt"
+			} else if strings.HasPrefix(bid, "gemini-") {
+				poolID = "gemini"
+			}
+			ps := parsed[poolID]
+			if ps == nil {
+				continue
+			}
+
+			frac := clampFloat(b.RemainingFraction, 0, 1)
+			pct := int(math.Round(frac * 100.0))
+			if pct > 100 {
+				pct = 100
+			}
+			if pct < 0 {
+				pct = 0
+			}
+			var resetPtr *int64
+			if frac < 1.0 {
+				resetPtr = parseResetTimestamp(b.ResetTime)
+			}
+
+			win := strings.ToLower(strings.TrimSpace(b.Window))
+			isWeekly := win == "weekly" || strings.Contains(bid, "weekly") || strings.Contains(bid, "7d")
+			is5h := win == "5h" || strings.Contains(bid, "5h")
+
+			if isWeekly {
+				ps.w7 = windowState{seen: true, frac: frac, pct: pct, resetAt: resetPtr}
+			} else if is5h {
+				ps.w5 = windowState{seen: true, frac: frac, pct: pct, resetAt: resetPtr}
+			}
+		}
+	}
+
+	defs := []struct {
+		id   string
+		name string
+	}{
+		{id: "gemini", name: "Gemini"},
+		{id: "claude_gpt", name: "Claude · GPT"},
+	}
+
+	out := make([]PoolQuota, 0, len(defs))
+	for _, d := range defs {
+		ps := parsed[d.id]
+		if !ps.w5.seen && !ps.w7.seen {
+			continue
+		}
+		rem5, reset5 := ps.w5.pct, ps.w5.resetAt
+		rem7, reset7 := ps.w7.pct, ps.w7.resetAt
+		if !ps.w5.seen {
+			rem5, reset5 = rem7, reset7
+		}
+		if !ps.w7.seen {
+			rem7, reset7 = rem5, reset5
+		}
+		out = append(out, PoolQuota{
+			PoolID:         d.id,
+			DisplayName:    d.name,
+			Remaining5hPct: rem5,
+			Reset5hAt:      reset5,
+			Remaining7dPct: rem7,
+			Reset7dAt:      reset7,
+			Level:          classifyLevel(rem5, rem7),
+			Source:         "direct",
+		})
+	}
+	return out
 }
 
 func (p *LanguageServerProvider) estimateWeeklyFromDirect5h(poolID string, real5hPct int, nowUnix int64) (int, *int64) {

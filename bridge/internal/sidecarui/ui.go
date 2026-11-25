@@ -277,7 +277,7 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   }
   button.primary { background: rgba(167,139,250,0.24); border-color: rgba(167,139,250,0.45); }
   button:hover { background: rgba(255,255,255,0.14); }
-  .quota-row { display: grid; grid-template-columns: 24px 1fr 38px 82px; gap: 8px; align-items: center; font-size: 12px; margin-top: 6px; }
+  .quota-row { display: grid; grid-template-columns: 34px 1fr 38px 86px; gap: 8px; align-items: center; font-size: 12px; margin-top: 6px; white-space: nowrap; }
   .track { height: 5px; background: rgba(255,255,255,0.14); border-radius: 99px; overflow: hidden; }
   .fill { height: 100%; background: #e5e7f0; border-radius: 99px; }
   .fill.warn { background: var(--orange); }
@@ -347,7 +347,7 @@ function showToast(msg) {
 }
 
 function fmtReset(ts, pct) {
-  if (pct >= 100 || !ts) return "满额";
+  if (!ts) return "满额";
   const diff = ts - Math.floor(Date.now() / 1000);
   if (diff <= 60) return "即将重置";
   const d = Math.floor(diff / 86400);

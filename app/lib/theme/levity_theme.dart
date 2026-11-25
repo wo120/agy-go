@@ -161,7 +161,7 @@ class GlassCapsule extends StatelessWidget {
 
 /// Formats reset countdown matching "1h 9m 后重置" / "4d 10h 后重置" / "满额".
 String formatResetCountdown(int? resetAtUnix, int remainingPct, {DateTime? now}) {
-  if (remainingPct >= 100 || resetAtUnix == null || resetAtUnix <= 0) {
+  if (resetAtUnix == null || resetAtUnix <= 0) {
     return '满额';
   }
   final cur = (now ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000;

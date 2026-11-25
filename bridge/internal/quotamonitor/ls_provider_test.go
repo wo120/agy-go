@@ -92,6 +92,10 @@ func TestLanguageServerProviderParsesRealTierAndQuotas(t *testing.T) {
 func TestRefreshSnapshotBypassesLanguageServerCacheAndKeeps7dMonotonic(t *testing.T) {
 	callCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/RetrieveUserQuotaSummary") {
+			http.NotFound(w, r)
+			return
+		}
 		callCount++
 		frac := "0.50"
 		if callCount >= 3 {
@@ -166,5 +170,80 @@ func TestRefreshSnapshotBypassesLanguageServerCacheAndKeeps7dMonotonic(t *testin
 	snapFresh, err := mon.RefreshSnapshot(context.Background())
 	if err != nil || snapFresh.Pools[0].Remaining5hPct != 42 || callCount != 3 {
 		t.Fatalf("expected refreshed 42%% with 3 calls, got %+v calls=%d err=%v", snapFresh, callCount, err)
+	}
+}
+
+func TestLanguageServerProviderReadsAuthoritativeWeeklyAnd5hFromQuotaSummary(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/RetrieveUserQuotaSummary") {
+			if r.Header.Get("Connect-Protocol-Version") != "1" {
+				t.Errorf("expected Connect-Protocol-Version: 1 header")
+			}
+			_, _ = w.Write([]byte(`{
+				"response": {
+					"groups": [
+						{
+							"displayName": "Gemini Models",
+							"buckets": [
+								{"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.502606, "resetTime": "2026-12-01T12:56:18Z"},
+								{"bucketId": "gemini-5h", "window": "5h", "remainingFraction": 0.7935731, "resetTime": "2026-11-25T12:39:07Z"}
+							]
+						},
+						{
+							"displayName": "Claude and GPT models",
+							"buckets": [
+								{"bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.9977004, "resetTime": "2026-12-01T16:43:44Z"},
+								{"bucketId": "3p-5h", "window": "5h", "remainingFraction": 1, "resetTime": "2026-11-25T13:35:56Z"}
+							]
+						}
+					]
+				}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"userStatus": {
+				"userTier": {"id": "g1-pro-tier", "name": "Google AI Pro"},
+				"cascadeModelConfigData": {
+					"clientModelConfigs": [
+						{"label": "Gemini 4 Neon (High)", "modelId": "gemini-4-neon-high", "quotaInfo": {"remainingFraction": 0.79, "resetTime": "2026-11-25T12:39:07Z"}}
+					]
+				}
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	prov := NewLanguageServerProvider("", nil)
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	prov.envLookup = func(k string) string {
+		if k == "ANTIGRAVITY_LS_ADDRESS" {
+			return addr
+		}
+		return ""
+	}
+
+	now, _ := time.Parse(time.RFC3339, "2026-11-25T08:36:00Z")
+	snap, err := prov.Fetch(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+	if len(snap.Pools) != 2 {
+		t.Fatalf("expected 2 pools, got %d", len(snap.Pools))
+	}
+
+	gem := snap.Pools[0]
+	if gem.PoolID != "gemini" || gem.Remaining5hPct != 79 || gem.Remaining7dPct != 50 || gem.Reset5hAt == nil || gem.Reset7dAt == nil {
+		t.Fatalf("unexpected gemini authoritative quota: %+v", gem)
+	}
+	wantGem7d, _ := time.Parse(time.RFC3339, "2026-12-01T12:56:18Z")
+	if *gem.Reset7dAt != wantGem7d.Unix() {
+		t.Fatalf("expected gemini Reset7dAt=%d, got %d", wantGem7d.Unix(), *gem.Reset7dAt)
+	}
+
+	claude := snap.Pools[1]
+	if claude.PoolID != "claude_gpt" || claude.Remaining5hPct != 100 || claude.Reset5hAt != nil || claude.Remaining7dPct != 100 || claude.Reset7dAt == nil {
+		t.Fatalf("unexpected claude authoritative quota: %+v", claude)
 	}
 }
