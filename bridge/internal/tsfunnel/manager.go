@@ -535,17 +535,35 @@ func (m *Manager) startListenersLoop(ctx context.Context, tsSrv *tsnet.Server, l
 	}
 }
 
-// keepAliveFunnel periodically probes the public Funnel /api/v1/health endpoint.
-// This both keeps desktop proxy/DERP tunnels warm and auto-restarts tsnet if Funnel goes silently stale.
+// keepAliveFunnel warms up Funnel immediately after startup and periodically probes /api/v1/health.
+// This keeps desktop proxy/DERP tunnels warm and auto-restarts tsnet only after 3 consecutive failures.
 func (m *Manager) keepAliveFunnel(ctx context.Context, tsSrv *tsnet.Server, funnelURL string) {
 	if funnelURL == "" {
 		return
 	}
-	probeClient := &http.Client{Timeout: 12 * time.Second}
+	probeClient := &http.Client{
+		Timeout: 20 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			TLSHandshakeTimeout: 15 * time.Second,
+		},
+	}
 	healthURL := strings.TrimRight(funnelURL, "/") + "/api/v1/health"
-	consecutiveFails := 0
 
-	ticker := time.NewTicker(75 * time.Second)
+	// Warm up WireGuard/Funnel ingress right after startup so the first mobile request does not hit a cold EOF.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(4 * time.Second):
+	}
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil); err == nil {
+		if resp, err := probeClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}
+
+	consecutiveFails := 0
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -578,8 +596,8 @@ func (m *Manager) keepAliveFunnel(ctx context.Context, tsSrv *tsnet.Server, funn
 			}
 
 			consecutiveFails++
-			log.Printf("[agy-remote] Tailscale Funnel keepalive probe failed (%d/2): %v", consecutiveFails, err)
-			if consecutiveFails >= 2 {
+			log.Printf("[agy-remote] Tailscale Funnel keepalive probe failed (%d/3): %v", consecutiveFails, err)
+			if consecutiveFails >= 3 {
 				log.Printf("[agy-remote] Tailscale Funnel appears stale; auto-restarting embedded tsnet node...")
 				go m.restartSelfHeal(tsSrv)
 				return
