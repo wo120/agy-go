@@ -81,7 +81,7 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                         ),
                         OutlinedButton(
                           onPressed: () => NativeBridge.instance.openBatteryOptimizationSettings(),
-                          child: const Text('小米/安卓防杀后台设置'),
+                          child: const Text('系统防杀后台 / 电池设置'),
                         ),
                         TextButton(
                           onPressed: () => ref.read(hostConnectionProvider.notifier).disconnectAndClear(),
@@ -109,6 +109,16 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                       child: SizedBox(
                         height: 240,
                         child: MobileScanner(
+                          errorBuilder: (ctx, error, _) => Container(
+                            color: const Color(0xFF141626),
+                            padding: const EdgeInsets.all(16),
+                            alignment: Alignment.center,
+                            child: Text(
+                              '相机不可用（${error.errorCode.name}），请使用下方「粘贴配对 JSON」或手动输入连接。',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
+                            ),
+                          ),
                           onDetect: (capture) {
                             for (final barcode in capture.barcodes) {
                               final raw = barcode.rawValue;

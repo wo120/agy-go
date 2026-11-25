@@ -92,20 +92,33 @@ object NativeBridgePlugin : MethodChannel.MethodCallHandler {
                 result.success(true)
             }
             "openBatterySettings" -> {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:${act.packageName}")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val pkgUri = Uri.parse("package:${act.packageName}")
+                val candidates = listOf(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = pkgUri
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = pkgUri
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                    Intent(Settings.ACTION_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+                var opened = false
+                for (intent in candidates) {
+                    try {
+                        act.startActivity(intent)
+                        opened = true
+                        break
+                    } catch (_: Exception) {
+                    }
                 }
-                try {
-                    act.startActivity(intent)
-                } catch (_: Exception) {
-                    act.startActivity(
-                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        },
-                    )
-                }
-                result.success(true)
+                result.success(opened)
             }
             else -> result.notImplemented()
         }

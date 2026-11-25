@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -52,12 +53,17 @@ func DefaultConfig() (*Config, error) {
 	agyDir := filepath.Join(home, ".gemini", "antigravity")
 	cfgDir := filepath.Join(home, ".config", "antigravity-mobile")
 
+	agentAPIBin := filepath.Join(agyDir, "bin", "agentapi")
+	if runtime.GOOS == "windows" {
+		agentAPIBin += ".exe"
+	}
+
 	return &Config{
 		ListenAddr:       "0.0.0.0:8765",
 		HostName:         hostName,
 		AntigravityDir:   agyDir,
 		StateDBPath:      filepath.Join(cfgDir, "bridge_state.db"),
-		AgentAPIBin:      filepath.Join(agyDir, "bin", "agentapi"),
+		AgentAPIBin:      agentAPIBin,
 		SubscriptionTier: "Google AI Ultra",
 		Gemini5hBudget:   5_000_000,
 		Gemini7dBudget:   50_000_000,

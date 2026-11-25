@@ -348,15 +348,18 @@ func uriToLocalPath(u string) string {
 		return ""
 	}
 	if strings.HasPrefix(u, "file://") {
-		parsed, err := url.Parse(u)
-		if err == nil && parsed.Path != "" {
-			decoded, decErr := url.PathUnescape(parsed.Path)
-			if decErr == nil {
-				return filepath.Clean(decoded)
+		p := strings.TrimPrefix(u, "file://")
+		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
+			if decoded, decErr := url.PathUnescape(parsed.Path); decErr == nil {
+				p = decoded
+			} else {
+				p = parsed.Path
 			}
-			return filepath.Clean(parsed.Path)
 		}
-		return filepath.Clean(strings.TrimPrefix(u, "file://"))
+		if len(p) >= 3 && p[0] == '/' && ((p[1] >= 'A' && p[1] <= 'Z') || (p[1] >= 'a' && p[1] <= 'z')) && p[2] == ':' {
+			p = p[1:]
+		}
+		return filepath.Clean(p)
 	}
 	if filepath.IsAbs(u) {
 		return filepath.Clean(u)

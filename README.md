@@ -109,28 +109,74 @@ antigravity-mobile/
 
 ## 快速开始
 
-### 前置环境
+### 方式一：直接下载 GitHub Releases 成品安装（推荐，无需 Go / Flutter 环境）
 
-- **Mac 宿主机**：macOS + Google Antigravity + Go `1.24+`
+前往仓库 [Releases 页面](https://github.com/wo120/agy-go/releases) 下载对应平台产物：
+
+| 目标端 | 下载文件 | 安装位置 / 方式 |
+| :--- | :--- | :--- |
+| **macOS（Apple Silicon）** | `agy-remote-macos-arm64.tar.gz` | 解压到 `~/.gemini/config/plugins/` |
+| **macOS（Intel）** | `agy-remote-macos-amd64.tar.gz` | 解压到 `~/.gemini/config/plugins/` |
+| **Windows（64位）** | `agy-remote-windows-amd64.zip` | 解压到 `%USERPROFILE%\.gemini\config\plugins\` |
+| **Android 手机** | `app-android-arm64.apk` | 手机直接安装 |
+| **华为 Mate 80 / Pura 80（纯血鸿蒙）** | `app-harmonyos-80-arm64.apk` | 通过手机「文件管理 → **卓易通**」打开安装 |
+
+#### 桌面端扩展安装教程
+
+**1. macOS 安装（终端执行）：**
+```bash
+mkdir -p ~/.gemini/config/plugins
+tar -xzf ~/Downloads/agy-remote-macos-arm64.tar.gz -C ~/.gemini/config/plugins
+# 若 macOS Gatekeeper 提示未知开发者，解除隔离属性即可：
+xattr -dr com.apple.quarantine ~/.gemini/config/plugins/agy-remote
+```
+
+**2. Windows 安装（PowerShell 执行或图形化解压）：**
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.gemini\config\plugins" | Out-Null
+Expand-Archive -Force "$env:USERPROFILE\Downloads\agy-remote-windows-amd64.zip" "$env:USERPROFILE\.gemini\config\plugins"
+```
+> 解压后请确认目录结构为 `...\.gemini\config\plugins\agy-remote\plugin.json`（不要多套一层目录）。
+
+**3. 在 Antigravity 中启用扩展并配对手机：**
+1. 打开桌面端 **Google Antigravity**，进入插件管理页启用 **`agy-remote`**（插件会自动在后台拉起 Sidecar 服务）。
+2. 打开右侧边栏 **`agy-remote`** 面板，即可看到配对二维码、当前局域网 / Tailscale 地址以及 `5h/7d` 配额。
+3. 在手机端打开 **AGY Go**，点击左上角无线图标 →「打开相机扫描二维码」（若容器环境相机不可用，可复制面板中的配对 JSON 在「方式二」粘贴导入）。
+
+---
+
+### 方式二：从源码编译安装（开发者）
+
+#### 前置环境
+
+- **桌面端**：macOS / Windows + Google Antigravity + Go `1.24+`
 - **Android 设备**：Android `8.0+`（`minSdk = 26`，`arm64` 架构）
 - **编译 APK 额外依赖**：Flutter SDK、JDK 17、Android SDK
 
-### 1. 一键安装 Mac 端 Antigravity 插件 `agy-remote`
+#### 1. 一键安装桌面端 Antigravity 插件 `agy-remote`（macOS / Windows）
 
+**macOS / Linux：**
 ```bash
 cd /Users/apple/go-project/ai/antigravity-mobile
 ./scripts/install-plugin.sh
 ```
 
-脚本会自动编译 Go 单二进制并安装插件到 `~/.gemini/config/plugins/agy-remote/`（若旧版 Sidecar 正在运行会自动平滑重启）：
-1. 在 Antigravity 插件管理页启用 **`agy-remote`**（无需手动在终端启动服务）。
-2. 打开右侧边栏 **`agy-remote`** 面板即可直接用手机扫码配对、查看实时配额或点击测试推送。
-3. 如需脱离 Antigravity 单独调试或终端配对，支持直接运行：
-   ```bash
-   ~/.gemini/config/plugins/agy-remote/bin/agy-remote <serve|sidecar|mcp|hook|pair|status>
-   ```
+**Windows（PowerShell）：**
+```powershell
+.\scripts\install-plugin.ps1
+```
 
-### 2. 编译与安装 Android APK
+**跨平台批量打包发布压缩包（输出到 `dist/`）：**
+```bash
+./scripts/package-plugin.sh
+```
+
+脚本会自动编译 Go 单二进制并安装插件到 `~/.gemini/config/plugins/agy-remote/`（Windows 为 `%USERPROFILE%\.gemini\config\plugins\agy-remote\`；若旧版 Sidecar 正在运行会自动平滑重启）。如需脱离 Antigravity 单独调试或终端配对，支持直接运行：
+```bash
+~/.gemini/config/plugins/agy-remote/bin/agy-remote <serve|sidecar|mcp|hook|pair|status>
+```
+
+#### 2. 编译与安装 Android / 鸿蒙兼容 APK
 
 ```bash
 cd /Users/apple/go-project/ai/antigravity-mobile/app
@@ -140,15 +186,18 @@ PUB_HOSTED_URL=https://pub.flutter-io.cn \
 FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn \
 flutter --no-version-check --suppress-analytics build apk --release --target-platform android-arm64
 
+# 华为 Mate 80 / Pura 80（纯血鸿蒙 + 卓易通）兼容包：
+ORG_GRADLE_PROJECT_harmonyCompat=true \
+flutter --no-version-check --suppress-analytics build apk --release --target-platform android-arm64
+
 # 安装到开启 USB 调试的安卓手机
 adb install -r build/app/outputs/flutter-apk/app-release.apk
 ```
 
-### 3. 扫码配对与安卓后台保活建议（小米 HyperOS 等）
+#### 3. 安卓后台保活建议（小米 HyperOS 等）
 
-1. 打开手机端 AGY Go，点击左上角无线图标进入「主机连接与配对」，扫描 Mac 侧边栏面板（或 `agy-remote pair` 输出）的二维码（亦支持直接粘贴配对 JSON 或手动填写端点）。
-2. 配对后 App 会请求通知权限并启动极低干扰的常驻连接通知。
-3. 在「主机连接与配对 → 小米/安卓防杀后台设置」中将本应用设为**无限制省电策略**并允许**自启动**，即可在锁屏状态下即时收到 Agent 决策提醒，并直接在通知栏输入回复或一键确认开工。
+1. 配对后 App 会请求通知权限并启动极低干扰的常驻连接通知。
+2. 在「主机连接与配对 → 系统防杀后台 / 电池设置」中将本应用设为**无限制省电策略**并允许**自启动**，即可在锁屏状态下即时收到 Agent 决策提醒，并直接在通知栏输入回复或一键确认开工。
 
 ---
 

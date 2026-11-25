@@ -29,15 +29,22 @@ class AlwaysOnService : Service() {
                 putExtra(EXTRA_HOST, hostName)
                 putExtra(EXTRA_STATUS, statusText)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (_: Exception) {
+                // Background start / container FGS restrictions (e.g. Android 12+, HarmonyOS container)
             }
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, AlwaysOnService::class.java))
+            try {
+                context.stopService(Intent(context, AlwaysOnService::class.java))
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -68,12 +75,17 @@ class AlwaysOnService : Service() {
             .setContentIntent(pi)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            START_STICKY
+        } catch (_: Exception) {
+            stopSelf()
+            START_NOT_STICKY
         }
-        return START_STICKY
     }
 
     private fun ensureChannel() {

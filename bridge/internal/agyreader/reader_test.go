@@ -3,6 +3,7 @@ package agyreader
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -77,5 +78,15 @@ func TestReaderSummariesSubagentsAndSearch(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].ConversationID != "root-1" {
 		t.Fatalf("unexpected search hits: %+v", hits)
+	}
+}
+
+func TestUriToLocalPathWindowsDriveURI(t *testing.T) {
+	got := uriToLocalPath("file:///C:/Users/demo/project")
+	if strings.HasPrefix(got, "/") || strings.HasPrefix(got, `\`) {
+		t.Fatalf("expected drive-letter path without leading slash, got %q", got)
+	}
+	if !strings.Contains(got, "C:") {
+		t.Fatalf("expected drive letter C: in %q", got)
 	}
 }

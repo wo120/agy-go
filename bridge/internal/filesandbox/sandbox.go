@@ -122,7 +122,14 @@ func ListArtifacts(brainConvDir string) ([]ArtifactItem, error) {
 // ResolveAllowed validates that targetPath is a safe regular file inside one of allowedRoots.
 func ResolveAllowed(targetPath string, allowedRoots []string) (string, os.FileInfo, error) {
 	targetPath = strings.TrimSpace(targetPath)
-	targetPath = strings.TrimPrefix(targetPath, "file://")
+	if strings.HasPrefix(targetPath, "file://") {
+		targetPath = strings.TrimPrefix(targetPath, "file://")
+		if len(targetPath) >= 3 && targetPath[0] == '/' &&
+			((targetPath[1] >= 'A' && targetPath[1] <= 'Z') || (targetPath[1] >= 'a' && targetPath[1] <= 'z')) &&
+			targetPath[2] == ':' {
+			targetPath = targetPath[1:]
+		}
+	}
 	if targetPath == "" || !filepath.IsAbs(targetPath) {
 		return "", nil, ErrPathForbidden
 	}

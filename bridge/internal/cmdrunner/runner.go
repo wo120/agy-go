@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/antigravity-mobile/bridge/internal/procutil"
 )
 
 var (
@@ -76,7 +78,7 @@ func New(agentAPIBin, daemonDir string) *Runner {
 		agentAPIBin: agentAPIBin,
 		daemonDir:   daemonDir,
 		exec:        osExecutor{},
-		pidAliveFn:  isPIDAlive,
+		pidAliveFn:  procutil.IsPIDAlive,
 	}
 }
 
@@ -94,6 +96,12 @@ func (r *Runner) resolveAgentAPICmd(subArgs []string) (string, []string, error) 
 	}
 	if _, err := os.Stat(r.agentAPIBin); err == nil {
 		return r.agentAPIBin, subArgs, nil
+	}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(r.agentAPIBin), ".exe") {
+		exePath := r.agentAPIBin + ".exe"
+		if _, err := os.Stat(exePath); err == nil {
+			return exePath, subArgs, nil
+		}
 	}
 	return "", nil, ErrBinaryMissing
 }
@@ -218,12 +226,4 @@ func (r *Runner) discoverActiveAddress() (string, error) {
 		return "", ErrDesktopOffline
 	}
 	return bestAddr, nil
-}
-
-func isPIDAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
