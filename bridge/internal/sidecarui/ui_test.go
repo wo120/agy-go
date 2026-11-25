@@ -15,7 +15,33 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
+
+type stubTunnel struct {
+	st tsfunnel.Status
+}
+
+func (s *stubTunnel) Status() tsfunnel.Status { return s.st }
+func (s *stubTunnel) Enable() error {
+	s.st.Enabled = true
+	s.st.State = tsfunnel.StateNeedsLogin
+	s.st.AuthURL = "https://login.tailscale.com/a/test123"
+	return nil
+}
+func (s *stubTunnel) Disable() error {
+	s.st.Enabled = false
+	s.st.State = tsfunnel.StateDisabled
+	s.st.AuthURL = ""
+	return nil
+}
+func (s *stubTunnel) Logout() error { return s.Disable() }
+func (s *stubTunnel) Endpoints() []string {
+	if s.st.FunnelURL != "" {
+		return []string{s.st.FunnelURL}
+	}
+	return nil
+}
 
 func TestSidecarUIStatusAndTokenAuth(t *testing.T) {
 	svg, err := BuildQRSVG(`{"v":1,"hostName":"Test"}`)
@@ -70,5 +96,18 @@ func TestSidecarUIStatusAndTokenAuth(t *testing.T) {
 	resp3, err := http.DefaultClient.Do(req)
 	if err != nil || resp3.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 with token, got %d err=%v", resp3.StatusCode, err)
+	}
+
+	// Tunnel enable endpoint requires sidecar token and returns updated authUrl state
+	hub.SetTunnel(&stubTunnel{st: tsfunnel.Status{State: tsfunnel.StateDisabled, Hostname: "agy-test"}})
+	resp4, err := http.Post(ts.URL+"/api/tunnel/enable", "application/json", strings.NewReader("{}"))
+	if err != nil || resp4.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on /api/tunnel/enable without token, got %d err=%v", resp4.StatusCode, err)
+	}
+	req5, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/tunnel/enable", strings.NewReader("{}"))
+	req5.Header.Set("x-sidecar-token", "secret_ui_tok")
+	resp5, err := http.DefaultClient.Do(req5)
+	if err != nil || resp5.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on /api/tunnel/enable with token, got %d err=%v", resp5.StatusCode, err)
 	}
 }

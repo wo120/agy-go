@@ -29,7 +29,7 @@ build_darwin() {
   echo "[package] Building darwin/${arch}..."
   (
     cd "${REPO_ROOT}/bridge"
-    GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=darwin GOARCH="${arch}" \
+    GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" CGO_ENABLED=0 GOOS=darwin GOARCH="${arch}" \
       go build -trimpath -ldflags="-s -w" -o "${bundle}/bin/agy-remote" ./cmd/agy-bridge
   )
   chmod +x "${bundle}/bin/agy-remote"
@@ -48,7 +48,7 @@ build_windows() {
   echo "[package] Building windows/${arch}..."
   (
     cd "${REPO_ROOT}/bridge"
-    GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
+    GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
       go build -trimpath -ldflags="-s -w" -o "${bundle}/bin/agy-remote.exe" ./cmd/agy-bridge
   )
 

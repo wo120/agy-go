@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -56,12 +58,29 @@ bool isDirectEndpointUrl(String rawUrl) {
   return false;
 }
 
+HttpClient _createRawHttpClient({
+  required bool directBypassProxy,
+  Duration connectionTimeout = const Duration(seconds: 6),
+  Duration idleTimeout = const Duration(seconds: 10),
+}) {
+  final client = HttpClient()
+    ..connectionTimeout = connectionTimeout
+    ..idleTimeout = idleTimeout;
+  if (directBypassProxy) {
+    client.findProxy = (_) => 'DIRECT';
+  }
+  return client;
+}
+
 class AgyHttpCarrier {
   AgyHttpCarrier({
     required this.baseUrl,
     required this.token,
     http.Client? httpClient,
-  }) : _http = httpClient ?? http.Client();
+  }) : _http = httpClient ??
+            IOClient(
+              _createRawHttpClient(directBypassProxy: isDirectEndpointUrl(baseUrl)),
+            );
 
   final String baseUrl;
   final String token;
@@ -82,7 +101,14 @@ class AgyHttpCarrier {
     http.Client? httpClient,
   }) async {
     if (endpoints.isEmpty) return null;
-    final client = httpClient ?? http.Client();
+    final client = httpClient ??
+        IOClient(
+          HttpClient()
+            ..connectionTimeout = timeout
+            ..idleTimeout = const Duration(seconds: 5)
+            ..findProxy = (uri) =>
+                isDirectEndpointUrl(uri.toString()) ? 'DIRECT' : HttpClient.findProxyFromEnvironment(uri),
+        );
     final ownsClient = httpClient == null;
     final completer = Completer<EndpointProbeResult?>();
     var remaining = endpoints.length;
@@ -136,6 +162,7 @@ class AgyHttpCarrier {
     String method, [
     Map<String, dynamic> params = const {},
     String? requestId,
+    Duration timeout = const Duration(seconds: 12),
   ]) async {
     final reqId = requestId ?? nextRequestId();
     http.Response resp;
@@ -150,7 +177,7 @@ class AgyHttpCarrier {
               'params': params,
             }),
           )
-          .timeout(const Duration(seconds: 28));
+          .timeout(timeout);
     } catch (e) {
       throw CarrierException('Network request failed for $method', e);
     }
@@ -237,7 +264,12 @@ class AgyHttpCarrier {
     if (title != null && title.isNotEmpty) params['title'] = title;
     if (model != null && model.isNotEmpty) params['model'] = model;
     if (workspacePath != null && workspacePath.isNotEmpty) params['workspacePath'] = workspacePath;
-    final data = await callRpc('sessions.create', params, requestId) as Map<String, dynamic>?;
+    final data = await callRpc(
+      'sessions.create',
+      params,
+      requestId,
+      const Duration(seconds: 28),
+    ) as Map<String, dynamic>?;
     return data?['conversationId'] as String?;
   }
 
@@ -246,6 +278,7 @@ class AgyHttpCarrier {
       'sessions.sendMessage',
       {'conversationId': conversationId, 'content': content},
       requestId,
+      const Duration(seconds: 28),
     );
   }
 
@@ -343,10 +376,18 @@ class AgyMuxClient {
   AgyMuxClient({
     required this.baseUrl,
     required this.token,
+    this.pingInterval = const Duration(seconds: 8),
+    this.pongTimeout = const Duration(seconds: 14),
+    this.connectTimeout = const Duration(seconds: 6),
+    this.onReconnectNeeded,
   });
 
   final String baseUrl;
   final String token;
+  final Duration pingInterval;
+  final Duration pongTimeout;
+  final Duration connectTimeout;
+  final void Function()? onReconnectNeeded;
 
   final _statusCtrl = StreamController<MuxConnectionStatus>.broadcast();
   final _rttCtrl = StreamController<({int rttMs, bool desktopOnline})>.broadcast();
@@ -357,18 +398,24 @@ class AgyMuxClient {
   Stream<MuxEventMessage> get messages => _msgCtrl.stream;
 
   WebSocketChannel? _channel;
+  HttpClient? _wsHttpClient;
   StreamSubscription? _sub;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
+  Completer<bool>? _verifyPongCompleter;
+  int _verifyPingTs = 0;
   final Set<String> _activeSubs = {'\$global'};
   final MuxSeqTracker _seqTracker = MuxSeqTracker();
   int _backoffMs = 500;
+  int _socketEpoch = 0;
+  int _consecutiveFailures = 0;
+  int _lastActivityMs = 0;
   bool _disposed = false;
 
   void connect() {
     if (_disposed) return;
     _statusCtrl.add(MuxConnectionStatus.connecting);
-    _openSocket();
+    unawaited(_openSocket());
   }
 
   void subscribe(String channel) {
@@ -382,25 +429,81 @@ class AgyMuxClient {
     _send({'type': 'unsub', 'channel': channel});
   }
 
-  void _openSocket() {
+  /// Sends an immediate ping and waits briefly for any server frame; forces reconnect on half-open sockets.
+  Future<bool> verifyAlive({Duration timeout = const Duration(milliseconds: 1500)}) async {
+    if (_disposed || _channel == null) return false;
+    final existing = _verifyPongCompleter;
+    if (existing != null && !existing.isCompleted) {
+      return existing.future;
+    }
+
+    final completer = Completer<bool>();
+    final pingTs = max(DateTime.now().millisecondsSinceEpoch, _verifyPingTs + 1);
+    _verifyPongCompleter = completer;
+    _verifyPingTs = pingTs;
+    _send({'type': 'ping', 'clientTs': pingTs});
+
+    final ok = await completer.future.timeout(timeout, onTimeout: () => false);
+    if (!completer.isCompleted) {
+      completer.complete(ok);
+    }
+    if (identical(_verifyPongCompleter, completer)) {
+      _verifyPongCompleter = null;
+    }
+    if (!ok && !_disposed) {
+      _scheduleReconnect();
+    }
+    return ok;
+  }
+
+  Future<void> _openSocket() async {
     if (_disposed) return;
     _cleanupSocket();
     _seqTracker.reset();
+    final epoch = ++_socketEpoch;
 
     final clean = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
     final wsUrl = clean.startsWith('https://')
         ? clean.replaceFirst('https://', 'wss://')
         : clean.replaceFirst('http://', 'ws://');
 
+    final customClient = _createRawHttpClient(
+      directBypassProxy: isDirectEndpointUrl(baseUrl),
+      connectionTimeout: connectTimeout,
+    );
+    _wsHttpClient = customClient;
+
     try {
-      _channel = IOWebSocketChannel.connect(
+      final channel = IOWebSocketChannel.connect(
         Uri.parse('$wsUrl/api/v1/mux'),
         headers: {'Authorization': 'Bearer $token'},
         pingInterval: const Duration(seconds: 25),
+        connectTimeout: connectTimeout,
+        customClient: customClient,
+      );
+      _channel = channel;
+
+      // Wait until the WebSocket handshake actually completes before reporting connected.
+      await channel.ready.timeout(connectTimeout);
+      if (_disposed || epoch != _socketEpoch) {
+        try {
+          await channel.sink.close();
+        } catch (_) {}
+        return;
+      }
+
+      _backoffMs = 500;
+      _consecutiveFailures = 0;
+      _lastActivityMs = DateTime.now().millisecondsSinceEpoch;
+
+      _sub = channel.stream.listen(
+        _onRawMessage,
+        onError: (_) => _scheduleReconnect(),
+        onDone: _scheduleReconnect,
+        cancelOnError: true,
       );
 
       _statusCtrl.add(MuxConnectionStatus.connected);
-      _backoffMs = 500;
 
       // Re-subscribe any non-global session channels on reconnect.
       for (final ch in _activeSubs) {
@@ -410,19 +513,19 @@ class AgyMuxClient {
       }
 
       _startPingLoop();
-      _sub = _channel!.stream.listen(
-        _onRawMessage,
-        onError: (_) => _scheduleReconnect(),
-        onDone: _scheduleReconnect,
-        cancelOnError: true,
-      );
     } catch (_) {
+      if (_disposed || epoch != _socketEpoch) return;
+      _consecutiveFailures++;
+      if (_consecutiveFailures == 2) {
+        onReconnectNeeded?.call();
+      }
       _scheduleReconnect();
     }
   }
 
   void _onRawMessage(dynamic raw) {
     if (raw is! String) return;
+    _lastActivityMs = DateTime.now().millisecondsSinceEpoch;
     Map<String, dynamic> frame;
     try {
       frame = jsonDecode(raw) as Map<String, dynamic>;
@@ -433,11 +536,20 @@ class AgyMuxClient {
     final type = (frame['type'] as String?) ?? '';
     if (type == 'pong') {
       final clientTs = (frame['clientTs'] as num?)?.toInt() ?? 0;
+      final pendingVerify = _verifyPongCompleter;
+      if (pendingVerify != null && !pendingVerify.isCompleted && clientTs >= _verifyPingTs) {
+        pendingVerify.complete(true);
+      }
       if (clientTs > 0) {
         final rtt = max(1, DateTime.now().millisecondsSinceEpoch - clientTs);
         _rttCtrl.add((rttMs: rtt, desktopOnline: (frame['desktopOnline'] as bool?) ?? false));
       }
       return;
+    }
+
+    final pendingVerify = _verifyPongCompleter;
+    if (pendingVerify != null && !pendingVerify.isCompleted) {
+      pendingVerify.complete(true);
     }
 
     final channel = (frame['channel'] as String?) ?? '\$global';
@@ -472,7 +584,13 @@ class AgyMuxClient {
   void _startPingLoop() {
     _pingTimer?.cancel();
     _send({'type': 'ping', 'clientTs': DateTime.now().millisecondsSinceEpoch});
-    _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    _pingTimer = Timer.periodic(pingInterval, (_) {
+      final idleMs = DateTime.now().millisecondsSinceEpoch - _lastActivityMs;
+      if (idleMs > pongTimeout.inMilliseconds) {
+        // Half-open TCP socket detected (e.g. Wi-Fi <-> 5G switch or container freeze).
+        _scheduleReconnect();
+        return;
+      }
       _send({'type': 'ping', 'clientTs': DateTime.now().millisecondsSinceEpoch});
     });
   }
@@ -484,7 +602,7 @@ class AgyMuxClient {
     final delay = Duration(milliseconds: _backoffMs);
     _backoffMs = min(_backoffMs * 2, 10000);
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(delay, _openSocket);
+    _reconnectTimer = Timer(delay, () => unawaited(_openSocket()));
   }
 
   void _send(Map<String, dynamic> payload) {
@@ -496,12 +614,21 @@ class AgyMuxClient {
   void _cleanupSocket() {
     _pingTimer?.cancel();
     _pingTimer = null;
+    final pendingVerify = _verifyPongCompleter;
+    if (pendingVerify != null && !pendingVerify.isCompleted) {
+      pendingVerify.complete(false);
+    }
+    _verifyPongCompleter = null;
     _sub?.cancel();
     _sub = null;
     try {
       _channel?.sink.close();
     } catch (_) {}
     _channel = null;
+    try {
+      _wsHttpClient?.close(force: true);
+    } catch (_) {}
+    _wsHttpClient = null;
   }
 
   void dispose() {

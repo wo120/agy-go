@@ -55,6 +55,10 @@ type QuotaProvider interface {
 	Fetch(ctx context.Context, now time.Time) (*QuotaSnapshot, error)
 }
 
+type cacheInvalidator interface {
+	InvalidateCache()
+}
+
 // Monitor evaluates pluggable providers in priority order with local ledger fallback.
 type Monitor struct {
 	store     *statestore.Store
@@ -92,6 +96,21 @@ func (m *Monitor) Snapshot(ctx context.Context) (*QuotaSnapshot, error) {
 		}
 	}
 	return m.computeFromLedger(now)
+}
+
+// InvalidateCache clears cached responses across all quota providers.
+func (m *Monitor) InvalidateCache() {
+	for _, p := range m.providers {
+		if inv, ok := p.(cacheInvalidator); ok {
+			inv.InvalidateCache()
+		}
+	}
+}
+
+// RefreshSnapshot bypasses provider caches and fetches the freshest quota snapshot.
+func (m *Monitor) RefreshSnapshot(ctx context.Context) (*QuotaSnapshot, error) {
+	m.InvalidateCache()
+	return m.Snapshot(ctx)
 }
 
 // Calibrate back-calculates pool budgets so the local sliding window aligns with the user's real percentage.
@@ -140,7 +159,7 @@ func (m *Monitor) Calibrate(ctx context.Context, in CalibrationInput) (*QuotaSna
 	if err := m.store.SaveQuotaConfig(*cfg); err != nil {
 		return nil, err
 	}
-	return m.Snapshot(ctx)
+	return m.RefreshSnapshot(ctx)
 }
 
 func (m *Monitor) computeFromLedger(now time.Time) (*QuotaSnapshot, error) {

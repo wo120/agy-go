@@ -28,6 +28,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/sidecarui"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
 
 func main() {
@@ -164,6 +165,30 @@ func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 	})
 
 	srv = hubserver.New(cfg, store, reader, watcher, quota, runner, notif)
+
+	tsHostname := cfg.TailscaleHostname
+	if strings.TrimSpace(tsHostname) == "" {
+		tsHostname = cfg.HostName
+	}
+	tunnelMgr := tsfunnel.NewManager(tsfunnel.Options{
+		Hostname: tsHostname,
+		StateDir: cfg.TailscaleStateDir,
+		Port:     cfg.Port(),
+		Handler:  srv.Handler(),
+		OnPersistChange: func(enabled bool) {
+			cfg.TailscaleEnabled = enabled
+			if cfgPath != "" {
+				_ = config.Save(cfgPath, cfg)
+			}
+		},
+	})
+	srv.SetTunnel(tunnelMgr)
+	defer tunnelMgr.Close()
+	if cfg.TailscaleEnabled {
+		if err := tunnelMgr.Enable(); err != nil {
+			log.Printf("[agy-remote] auto-resume Tailscale Funnel warning: %v", err)
+		}
+	}
 
 	log.Printf("[agy-remote] scanning brain transcripts under %s", filepath.Join(cfg.AntigravityDir, "brain"))
 	if err := watcher.ScanAll(); err != nil {

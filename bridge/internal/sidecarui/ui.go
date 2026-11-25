@@ -40,6 +40,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/rotate-token", s.requireToken(s.handleRotateToken))
 	mux.HandleFunc("/api/test-notify", s.requireToken(s.handleTestNotify))
+	mux.HandleFunc("/api/tunnel/enable", s.requireToken(s.handleTunnelEnable))
+	mux.HandleFunc("/api/tunnel/disable", s.requireToken(s.handleTunnelDisable))
+	mux.HandleFunc("/api/tunnel/logout", s.requireToken(s.handleTunnelLogout))
 	return mux
 }
 
@@ -77,7 +80,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	summary := s.hub.StatusSummary(r.Context())
+	forceRefresh := r.URL.Query().Get("refresh") == "1" || r.URL.Query().Get("refresh") == "true"
+	summary := s.hub.StatusSummaryWithRefresh(r.Context(), forceRefresh)
 	if pairing, ok := summary["pairing"]; ok {
 		if raw, err := json.Marshal(pairing); err == nil {
 			summary["pairingJson"] = string(raw)
@@ -125,6 +129,36 @@ func (s *Server) handleTestNotify(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"clients": s.hub.ConnectedClientCount(),
 	})
+}
+
+func (s *Server) handleTunnelEnable(w http.ResponseWriter, r *http.Request) {
+	if err := s.hub.EnableTunnel(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.handleStatus(w, r)
+}
+
+func (s *Server) handleTunnelDisable(w http.ResponseWriter, r *http.Request) {
+	if err := s.hub.DisableTunnel(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.handleStatus(w, r)
+}
+
+func (s *Server) handleTunnelLogout(w http.ResponseWriter, r *http.Request) {
+	if err := s.hub.LogoutTunnel(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.handleStatus(w, r)
 }
 
 // BuildQRSVG encodes content into a clean high-contrast vector SVG QR code.
@@ -202,6 +236,21 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   .title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
   .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--green); box-shadow: 0 0 8px var(--green); }
   .pill { font-size: 11px; padding: 3px 9px; border-radius: 99px; background: rgba(167,139,250,0.16); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
+  .pill.ok { background: rgba(52,211,153,0.16); color: var(--green); border-color: rgba(52,211,153,0.35); }
+  .pill.warn { background: rgba(245,158,11,0.16); color: var(--orange); border-color: rgba(245,158,11,0.35); }
+  a.btn {
+    display: inline-block;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid rgba(96,165,250,0.5);
+    background: rgba(96,165,250,0.22);
+    color: var(--text);
+    padding: 7px 11px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  a.btn:hover { background: rgba(96,165,250,0.32); }
   .qr-wrap {
     margin: 12px auto;
     width: 196px;
@@ -248,6 +297,15 @@ const indexHTMLTemplate = `<!DOCTYPE html>
 
   <div class="card">
     <div class="row">
+      <div class="title" style="font-size:13.5px">5G 远程直连（内置 Tailscale Funnel）</div>
+      <span class="pill" id="tunnelBadge">未开启</span>
+    </div>
+    <div class="muted" style="margin-top:6px" id="tunnelDesc">开启后可用 GitHub 账号一键授权，生成固定公网 HTTPS 域名；手机端（含纯血鸿蒙）零安装直接 5G 连接。</div>
+    <div id="tunnelBody" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
       <div class="title" style="font-size:13.5px">Android / 移动端扫码直连</div>
       <span class="muted">AGY Go App</span>
     </div>
@@ -263,9 +321,13 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   <div class="card">
     <div class="row" style="margin-bottom:8px">
       <div class="title" style="font-size:13.5px">模型配额监控 (5h / 7d)</div>
-      <span class="muted" id="subTier">检测中...</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="muted" id="subTier">检测中...</span>
+        <button style="padding:3px 9px;font-size:11px" onclick="refresh(true, true)">刷新</button>
+      </div>
     </div>
     <div id="quotaBox"></div>
+    <div class="muted" id="quotaUpdated" style="margin-top:4px;font-size:11px"></div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -273,6 +335,8 @@ const indexHTMLTemplate = `<!DOCTYPE html>
 <script>
 const SIDECAR_TOKEN = __SIDECAR_TOKEN__;
 let lastPairingJson = "";
+let lastAuthUrl = "";
+let pollTimer = null;
 
 function showToast(msg) {
   const el = document.getElementById("toast");
@@ -306,9 +370,11 @@ function render(data) {
   const eps = data.endpoints || [];
   document.getElementById("endpointsBox").innerHTML = eps.map(e => '<div class="ep">' + e + '</div>').join("");
 
+  renderTunnel(data.tunnel || { state: "disabled" });
+
   const q = data.quota;
   if (q && q.pools) {
-    document.getElementById("subTier").textContent = q.subscriptionTier || "Google AI Ultra";
+    document.getElementById("subTier").textContent = q.subscriptionTier || "Google AI";
     document.getElementById("quotaBox").innerHTML = q.pools.map(p => {
       const w5 = p.remaining5hPct < 40;
       const w7 = p.remaining7dPct < 40;
@@ -318,14 +384,116 @@ function render(data) {
         '<div class="quota-row"><span class="muted">7d</span><div class="track"><div class="fill ' + (w7 ? 'warn' : '') + '" style="width:' + p.remaining7dPct + '%"></div></div><span class="' + (w7 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + p.remaining7dPct + '%</span><span class="muted" style="text-align:right">' + fmtReset(p.reset7dAt, p.remaining7dPct) + '</span></div>' +
       '</div>';
     }).join("");
+    if (q.updatedAt) {
+      const dt = new Date(q.updatedAt * 1000);
+      const hh = String(dt.getHours()).padStart(2, "0");
+      const mm = String(dt.getMinutes()).padStart(2, "0");
+      const ss = String(dt.getSeconds()).padStart(2, "0");
+      document.getElementById("quotaUpdated").textContent = "上次同步：" + hh + ":" + mm + ":" + ss;
+    }
   }
 }
 
-async function refresh() {
+function escHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function renderTunnel(t) {
+  const badge = document.getElementById("tunnelBadge");
+  const desc = document.getElementById("tunnelDesc");
+  const body = document.getElementById("tunnelBody");
+  const state = t.state || "disabled";
+  lastAuthUrl = t.authUrl || "";
+
+  const labels = {
+    disabled: ["未开启", "pill"],
+    starting: ["启动中...", "pill warn"],
+    needs_login: ["等待授权", "pill warn"],
+    tailnet_only: ["待开启 Funnel", "pill warn"],
+    running: ["5G 已就绪", "pill ok"],
+    error: ["连接异常", "pill warn"]
+  };
+  const meta = labels[state] || ["未开启", "pill"];
+  badge.textContent = meta[0];
+  badge.className = meta[1];
+  if (t.message) {
+    desc.textContent = t.message;
+  }
+
+  let html = "";
+  if (state === "disabled" || state === "error") {
+    html = '<div class="actions"><button class="primary" onclick="tunnelAction(\'enable\')">开启 5G 远程（支持 GitHub 授权）</button></div>';
+  } else if (state === "starting") {
+    html = '<div class="actions"><button onclick="tunnelAction(\'disable\')">取消</button></div>';
+  } else if (state === "needs_login") {
+    html = '<div class="actions">' +
+      (t.authUrl ? '<a class="btn" href="' + escHtml(t.authUrl) + '" target="_blank" rel="noreferrer">前往登录（GitHub / Google 授权）</a><button onclick="copyAuthUrl()">复制登录链接</button>' : '<span class="muted">正在获取授权链接...</span>') +
+      '<button onclick="tunnelAction(\'disable\')">关闭</button>' +
+      '</div>';
+  } else if (state === "tailnet_only") {
+    html = (t.accountLogin ? '<div class="muted">当前账号：' + escHtml(t.accountLogin) + '</div>' : '') +
+      '<div class="actions">' +
+      (t.helpUrl ? '<a class="btn" href="' + escHtml(t.helpUrl) + '" target="_blank" rel="noreferrer">打开 Tailscale 后台启用 HTTPS/Funnel</a>' : '') +
+      '<button class="primary" onclick="tunnelAction(\'enable\')">已开启，立即重试</button>' +
+      '<button onclick="tunnelAction(\'disable\')">关闭</button>' +
+      '</div>';
+  } else if (state === "running") {
+    html = (t.funnelUrl ? '<div class="ep" style="color:var(--green);background:rgba(52,211,153,0.12)">公网 5G：' + escHtml(t.funnelUrl) + '</div>' : '') +
+      (t.accountLogin ? '<div class="muted" style="margin-top:6px">已授权账号：' + escHtml(t.accountLogin) + '（已自动写入上方二维码）</div>' : '') +
+      '<div class="actions">' +
+      '<button onclick="tunnelAction(\'disable\')">关闭 5G 远程</button>' +
+      '<button onclick="tunnelAction(\'logout\')">退出切换账号</button>' +
+      '</div>';
+  }
+  body.innerHTML = html;
+
+  const fast = (state === "starting" || state === "needs_login");
+  schedulePoll(fast ? 2000 : 5000);
+}
+
+function schedulePoll(ms) {
+  if (window._pollMs === ms && pollTimer) return;
+  window._pollMs = ms;
+  clearInterval(pollTimer);
+  pollTimer = setInterval(refresh, ms);
+}
+
+async function copyAuthUrl() {
+  if (!lastAuthUrl) return;
   try {
-    const r = await fetch("/api/status");
+    await navigator.clipboard.writeText(lastAuthUrl);
+    showToast("授权登录链接已复制");
+  } catch {
+    showToast("复制失败");
+  }
+}
+
+async function tunnelAction(action) {
+  const r = await fetch("/api/tunnel/" + action, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-sidecar-token": SIDECAR_TOKEN },
+    body: "{}"
+  });
+  if (r.ok) {
+    render(await r.json());
+    if (action === "enable") showToast("已启动内置 Tailscale 节点");
+    if (action === "disable") showToast("已关闭 5G 远程隧道");
+    if (action === "logout") showToast("已退出 Tailscale 账号");
+  } else {
+    showToast("操作失败 (" + r.status + ")");
+  }
+}
+
+let lastForceRefreshAt = 0;
+async function refresh(force, announce) {
+  try {
+    if (force && !announce && Date.now() - lastForceRefreshAt < 3000) return;
+    if (force) lastForceRefreshAt = Date.now();
+    const url = force ? "/api/status?refresh=1&_t=" + Date.now() : "/api/status?_t=" + Date.now();
+    const r = await fetch(url, { cache: "no-store" });
     const d = await r.json();
     render(d);
+    if (announce) showToast("配额与状态已刷新");
   } catch (e) {}
 }
 
@@ -367,8 +535,13 @@ async function rotateToken() {
   }
 }
 
-refresh();
-setInterval(refresh, 5000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh(true, false);
+});
+window.addEventListener("focus", () => refresh(true, false));
+
+refresh(true, false);
+schedulePoll(5000);
 </script>
 </body>
 </html>`

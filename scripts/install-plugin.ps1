@@ -9,7 +9,7 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 Push-Location (Join-Path $RepoRoot "bridge")
 try {
-    $env:GOTOOLCHAIN = "local"
+    if (-not $env:GOTOOLCHAIN) { $env:GOTOOLCHAIN = "auto" }
     & go build -o (Join-Path $BinDir "agy-remote.exe") ./cmd/agy-bridge
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {

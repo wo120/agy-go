@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -21,7 +22,23 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
+
+type fakeTunnel struct {
+	st tsfunnel.Status
+}
+
+func (f *fakeTunnel) Status() tsfunnel.Status { return f.st }
+func (f *fakeTunnel) Enable() error           { f.st.Enabled = true; f.st.State = tsfunnel.StateRunning; return nil }
+func (f *fakeTunnel) Disable() error          { f.st.Enabled = false; f.st.State = tsfunnel.StateDisabled; return nil }
+func (f *fakeTunnel) Logout() error           { return f.Disable() }
+func (f *fakeTunnel) Endpoints() []string {
+	if f.st.FunnelURL != "" {
+		return []string{f.st.FunnelURL}
+	}
+	return nil
+}
 
 func TestRPCFileSandboxAndMuxWS(t *testing.T) {
 	tmp := t.TempDir()
@@ -167,5 +184,68 @@ func TestRPCFileSandboxAndMuxWS(t *testing.T) {
 	}
 	if pong.Type != "pong" || pong.ClientTs != 12345 {
 		t.Fatalf("unexpected pong frame: %+v", pong)
+	}
+
+	// 5. Large sessions.get supports gzip compression and filters GENERIC noise
+	bigPad := strings.Repeat("x", 2048)
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(
+		`{"step_index":0,"source":"SYSTEM","type":"GENERIC","status":"DONE","created_at":"2026-11-24T12:34:00Z","content":"`+bigPad+`"}`+"\n"+
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-24T12:35:00Z","model":"gemini-4-neon-xhigh","content":"`+bigPad+`"}`+"\n",
+	), 0o644)
+
+	gzBody, _ := json.Marshal(map[string]any{
+		"requestId": "r-gz",
+		"method":    "sessions.get",
+		"params":    map[string]any{"conversationId": "conv-1", "limit": 80},
+	})
+	gzReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/rpc", bytes.NewReader(gzBody))
+	gzReq.Header.Set("Authorization", "Bearer agy_live_testtoken")
+	gzReq.Header.Set("Accept-Encoding", "gzip")
+	rawClient := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	gzResp, err := rawClient.Do(gzReq)
+	if err != nil {
+		t.Fatalf("sessions.get gzip req: %v", err)
+	}
+	defer gzResp.Body.Close()
+	if gzResp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected Content-Encoding: gzip, got %q", gzResp.Header.Get("Content-Encoding"))
+	}
+	gr, err := gzip.NewReader(gzResp.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gr.Close()
+	var sessOut struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Steps []brainwatcher.TranscriptStep `json:"steps"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(gr).Decode(&sessOut); err != nil {
+		t.Fatalf("decode gzipped sessions.get: %v", err)
+	}
+	if !sessOut.OK || len(sessOut.Data.Steps) != 1 || sessOut.Data.Steps[0].StepIndex != 1 {
+		t.Fatalf("expected 1 compacted visible step (index 1), got %+v", sessOut)
+	}
+
+	// 6. Attached TunnelProvider injects public Funnel HTTPS endpoint into pairing payload
+	srv.SetTunnel(&fakeTunnel{
+		st: tsfunnel.Status{
+			Enabled:   true,
+			State:     tsfunnel.StateRunning,
+			Hostname:  "agy-clawstation",
+			FunnelURL: "https://agy-clawstation.tail123.ts.net",
+		},
+	})
+	summary := srv.StatusSummary(t.Context())
+	eps, _ := summary["endpoints"].([]string)
+	foundFunnel := false
+	for _, ep := range eps {
+		if ep == "https://agy-clawstation.tail123.ts.net" {
+			foundFunnel = true
+		}
+	}
+	if !foundFunnel {
+		t.Fatalf("expected Funnel URL injected into endpoints, got %v", eps)
 	}
 }

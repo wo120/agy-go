@@ -8,7 +8,7 @@ echo "[agy-remote] Building Go binary..."
 mkdir -p "${REPO_ROOT}/plugin/bin"
 (
   cd "${REPO_ROOT}/bridge"
-  GOTOOLCHAIN=local go build -o "${REPO_ROOT}/plugin/bin/agy-remote" ./cmd/agy-bridge
+  GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" go build -o "${REPO_ROOT}/plugin/bin/agy-remote" ./cmd/agy-bridge
 )
 
 echo "[agy-remote] Installing plugin bundle to ${TARGET_DIR} ..."

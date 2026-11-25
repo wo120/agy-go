@@ -200,5 +200,85 @@ void main() {
       final resubChannel = await resubCompleter.future.timeout(const Duration(seconds: 3));
       expect(resubChannel, '\$global');
     });
+
+    test('never reports connected on unreachable port and detects silent half-open server', () async {
+      // 1. Unreachable port must transition connecting -> reconnecting without false connected.
+      final statuses = <MuxConnectionStatus>[];
+      final badMux = AgyMuxClient(
+        baseUrl: 'http://127.0.0.1:1',
+        token: 'tok',
+        connectTimeout: const Duration(milliseconds: 500),
+      );
+      addTearDown(badMux.dispose);
+      final sub = badMux.statusStream.listen(statuses.add);
+      addTearDown(sub.cancel);
+
+      badMux.connect();
+      await badMux.statusStream
+          .firstWhere((s) => s == MuxConnectionStatus.reconnecting)
+          .timeout(const Duration(seconds: 3));
+      expect(statuses, isNot(contains(MuxConnectionStatus.connected)));
+
+      // 2. Silent server (never responds to ping) triggers half-open reconnect watchdog.
+      final silentServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => silentServer.close(force: true));
+      silentServer.transform(WebSocketTransformer()).listen((ws) {
+        ws.listen((_) {}); // intentionally drop all pings
+      });
+
+      final silentMux = AgyMuxClient(
+        baseUrl: 'http://127.0.0.1:${silentServer.port}',
+        token: 'tok',
+        pingInterval: const Duration(milliseconds: 120),
+        pongTimeout: const Duration(milliseconds: 220),
+      );
+      addTearDown(silentMux.dispose);
+
+      final connectedF = silentMux.statusStream.firstWhere((s) => s == MuxConnectionStatus.connected);
+      final reconnectingF = silentMux.statusStream.firstWhere((s) => s == MuxConnectionStatus.reconnecting);
+      silentMux.connect();
+      await connectedF.timeout(const Duration(seconds: 2));
+      await reconnectingF.timeout(const Duration(seconds: 2));
+    });
+
+    test('verifyAlive detects silent half-open server immediately before pongTimeout', () async {
+      var respondToPing = true;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+
+      server.transform(WebSocketTransformer()).listen((ws) {
+        ws.listen((raw) {
+          if (!respondToPing) return;
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (frame['type'] == 'ping') {
+            ws.add(jsonEncode({
+              'type': 'pong',
+              'clientTs': frame['clientTs'],
+              'serverTs': DateTime.now().millisecondsSinceEpoch,
+              'desktopOnline': true,
+            }));
+          }
+        });
+      });
+
+      final mux = AgyMuxClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        token: 'tok',
+        pingInterval: const Duration(seconds: 30),
+        pongTimeout: const Duration(seconds: 60),
+      );
+      addTearDown(mux.dispose);
+
+      final connectedF = mux.statusStream.firstWhere((s) => s == MuxConnectionStatus.connected);
+      mux.connect();
+      await connectedF.timeout(const Duration(seconds: 2));
+
+      expect(await mux.verifyAlive(timeout: const Duration(milliseconds: 500)), isTrue);
+
+      respondToPing = false;
+      final reconnectingF = mux.statusStream.firstWhere((s) => s == MuxConnectionStatus.reconnecting);
+      expect(await mux.verifyAlive(timeout: const Duration(milliseconds: 220)), isFalse);
+      await reconnectingF.timeout(const Duration(seconds: 1));
+    });
   });
 }

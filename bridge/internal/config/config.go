@@ -21,8 +21,11 @@ type Config struct {
 	AntigravityDir   string   `json:"antigravityDir"`
 	StateDBPath      string   `json:"stateDbPath"`
 	AgentAPIBin      string   `json:"agentApiBin"`
-	PublicEndpoints  []string `json:"publicEndpoints,omitempty"`
-	SubscriptionTier string   `json:"subscriptionTier"`
+	PublicEndpoints   []string `json:"publicEndpoints,omitempty"`
+	TailscaleEnabled  bool     `json:"tailscaleEnabled,omitempty"`
+	TailscaleHostname string   `json:"tailscaleHostname,omitempty"`
+	TailscaleStateDir string   `json:"tailscaleStateDir,omitempty"`
+	SubscriptionTier  string   `json:"subscriptionTier"`
 	Gemini5hBudget   int64    `json:"gemini5hBudget"`
 	Gemini7dBudget   int64    `json:"gemini7dBudget"`
 	Claude5hBudget   int64    `json:"claude5hBudget"`
@@ -59,16 +62,17 @@ func DefaultConfig() (*Config, error) {
 	}
 
 	return &Config{
-		ListenAddr:       "0.0.0.0:8765",
-		HostName:         hostName,
-		AntigravityDir:   agyDir,
-		StateDBPath:      filepath.Join(cfgDir, "bridge_state.db"),
-		AgentAPIBin:      agentAPIBin,
-		SubscriptionTier: "Google AI Ultra",
-		Gemini5hBudget:   5_000_000,
-		Gemini7dBudget:   50_000_000,
-		Claude5hBudget:   3_000_000,
-		Claude7dBudget:   30_000_000,
+		ListenAddr:        "0.0.0.0:8765",
+		HostName:          hostName,
+		AntigravityDir:    agyDir,
+		StateDBPath:       filepath.Join(cfgDir, "bridge_state.db"),
+		AgentAPIBin:       agentAPIBin,
+		TailscaleStateDir: filepath.Join(cfgDir, "tsnet"),
+		SubscriptionTier:  "Google AI Ultra",
+		Gemini5hBudget:    5_000_000,
+		Gemini7dBudget:    50_000_000,
+		Claude5hBudget:    3_000_000,
+		Claude7dBudget:    30_000_000,
 	}, nil
 }
 
@@ -154,7 +158,16 @@ func (c *Config) Port() string {
 
 // BuildPairingPayload discovers local LAN and Tailscale IPs and produces the QR payload.
 func (c *Config) BuildPairingPayload(token string) PairingPayload {
-	endpoints := DiscoverEndpoints(c.Port(), c.PublicEndpoints)
+	return c.BuildPairingPayloadWithExtra(token, nil)
+}
+
+// BuildPairingPayloadWithExtra produces the QR payload with additional dynamic endpoints
+// (such as embedded Tailscale Funnel HTTPS URLs) appended and deduplicated.
+func (c *Config) BuildPairingPayloadWithExtra(token string, extraEndpoints []string) PairingPayload {
+	merged := make([]string, 0, len(c.PublicEndpoints)+len(extraEndpoints))
+	merged = append(merged, c.PublicEndpoints...)
+	merged = append(merged, extraEndpoints...)
+	endpoints := DiscoverEndpoints(c.Port(), merged)
 	return PairingPayload{
 		Version:   1,
 		HostName:  c.HostName,

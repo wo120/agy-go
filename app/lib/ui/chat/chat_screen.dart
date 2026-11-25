@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/app_state.dart';
 import '../../theme/levity_theme.dart';
 import '../artifacts/artifact_viewer.dart';
+import '../pairing/pairing_screen.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key, required this.conversationId});
@@ -127,20 +128,90 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             Column(
               children: [
-                if (chat.error != null)
+                if (chat.error != null && chat.rows.isNotEmpty)
                   Container(
                     width: double.infinity,
                     color: const Color(0x33F59E0B),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Text(chat.error!, style: const TextStyle(fontSize: 12.5, color: LevityColors.orangeWarning)),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            chat.error!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12.5, color: LevityColors.orangeWarning),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => ref.read(chatSessionProvider(widget.conversationId).notifier).reload(),
+                          child: const Text('重试', style: TextStyle(fontSize: 12.5, color: LevityColors.orangeWarning)),
+                        ),
+                      ],
+                    ),
                   ),
                 Expanded(
                   child: chat.loading
-                      ? const Center(child: CircularProgressIndicator())
+                      ? const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 12),
+                              Text('正在同步会话记录...', style: TextStyle(fontSize: 12.5, color: LevityColors.textMuted)),
+                            ],
+                          ),
+                        )
                       : chat.rows.isEmpty
-                          ? const Center(
-                              child: Text('暂无聊天步骤记录', style: TextStyle(color: LevityColors.textMuted)),
-                            )
+                          ? (chat.error != null
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24),
+                                    child: GlassCard(
+                                      padding: const EdgeInsets.all(20),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.wifi_off_rounded, size: 34, color: LevityColors.orangeWarning),
+                                          const SizedBox(height: 10),
+                                          const Text(
+                                            '会话内容加载失败',
+                                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: LevityColors.textPrimary),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            chat.error!,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
+                                          ),
+                                          const SizedBox(height: 14),
+                                          Wrap(
+                                            spacing: 10,
+                                            runSpacing: 8,
+                                            alignment: WrapAlignment.center,
+                                            children: [
+                                              FilledButton.tonal(
+                                                onPressed: () => ref
+                                                    .read(chatSessionProvider(widget.conversationId).notifier)
+                                                    .reload(),
+                                                child: const Text('重新加载'),
+                                              ),
+                                              OutlinedButton(
+                                                onPressed: () => Navigator.of(context).push(
+                                                  MaterialPageRoute(builder: (_) => const PairingScreen()),
+                                                ),
+                                                child: const Text('检查主机连接'),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : const Center(
+                                  child: Text('暂无聊天步骤记录', style: TextStyle(color: LevityColors.textMuted)),
+                                ))
                           : ListView.builder(
                               controller: _scrollCtrl,
                               reverse: true,

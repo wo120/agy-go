@@ -18,6 +18,11 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/statestore"
 )
 
+type weeklyAnchor struct {
+	pct5h    int
+	budget7d int64
+}
+
 // LanguageServerProvider reads authoritative subscription tier and live model pool quotas
 // directly from the local Antigravity LanguageServerService GetUserStatus RPC.
 type LanguageServerProvider struct {
@@ -25,12 +30,13 @@ type LanguageServerProvider struct {
 	store     *statestore.Store
 	client    *http.Client
 
-	mu        sync.Mutex
-	cached    *QuotaSnapshot
-	cachedAt  time.Time
-	cacheTTL  time.Duration
-	pidAlive  func(int) bool
-	envLookup func(string) string
+	mu           sync.Mutex
+	cached       *QuotaSnapshot
+	cachedAt     time.Time
+	cacheTTL     time.Duration
+	weeklyAnchor map[string]weeklyAnchor
+	pidAlive     func(int) bool
+	envLookup    func(string) string
 }
 
 // NewLanguageServerProvider constructs a direct Antigravity Language Server quota collector.
@@ -42,9 +48,10 @@ func NewLanguageServerProvider(daemonDir string, store *statestore.Store) *Langu
 			Timeout:   4 * time.Second,
 			Transport: &http.Transport{Proxy: nil}, // Always bypass system proxy for local loopback.
 		},
-		cacheTTL:  15 * time.Second,
-		pidAlive:  procutil.IsPIDAlive,
-		envLookup: os.Getenv,
+		cacheTTL:     5 * time.Second,
+		weeklyAnchor: make(map[string]weeklyAnchor),
+		pidAlive:     procutil.IsPIDAlive,
+		envLookup:    os.Getenv,
 	}
 }
 
@@ -293,14 +300,26 @@ func (p *LanguageServerProvider) estimateWeeklyFromDirect5h(poolID string, real5
 		budget7d = cfg.Window7dBudget
 	}
 	// If the user has not manually calibrated 7d, anchor 7d budget proportionally (~7x of implied 5h budget)
-	// whenever real 5h shows measurable usage so 7d stays realistic and never absurdly lower than actual consumption.
+	// whenever real 5h shows measurable usage. Keep the anchored budget stable while real5hPct stays flat
+	// between Antigravity LS server syncs so remaining7dPct does not artificially bounce upward as usage grows.
 	if (cfg == nil || cfg.Calibrated7dPct == nil) && u5.TotalCost > 0 && real5hPct < 98 && real5hPct > 0 {
-		used5Ratio := float64(100-real5hPct) / 100.0
-		implied5hBudget := float64(u5.TotalCost) / used5Ratio
-		anchored7d := int64(math.Round(implied5hBudget * 7.0))
-		if anchored7d > 0 {
-			budget7d = anchored7d
+		p.mu.Lock()
+		prev, hasPrev := p.weeklyAnchor[poolID]
+		if hasPrev && prev.pct5h == real5hPct && prev.budget7d > 0 {
+			budget7d = prev.budget7d
+		} else {
+			used5Ratio := float64(100-real5hPct) / 100.0
+			implied5hBudget := float64(u5.TotalCost) / used5Ratio
+			anchored7d := int64(math.Round(implied5hBudget * 7.0))
+			if anchored7d > 0 {
+				budget7d = anchored7d
+				if p.weeklyAnchor == nil {
+					p.weeklyAnchor = make(map[string]weeklyAnchor)
+				}
+				p.weeklyAnchor[poolID] = weeklyAnchor{pct5h: real5hPct, budget7d: anchored7d}
+			}
 		}
+		p.mu.Unlock()
 	}
 
 	return calcWindow(u7, budget7d, Window7dSeconds)

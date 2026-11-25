@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -25,7 +27,17 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
+
+// TunnelProvider abstracts the embedded remote 5G tunnel (Tailscale tsnet + Funnel).
+type TunnelProvider interface {
+	Status() tsfunnel.Status
+	Enable() error
+	Disable() error
+	Logout() error
+	Endpoints() []string
+}
 
 const ProtocolVersion = 1
 
@@ -111,6 +123,7 @@ type Server struct {
 	quota    *quotamonitor.Monitor
 	runner   *cmdrunner.Runner
 	notifier *notifier.Manager
+	tunnel   TunnelProvider
 
 	generation string
 	upgrader   websocket.Upgrader
@@ -124,6 +137,9 @@ type Server struct {
 
 	runningMu    sync.Mutex
 	runningSince map[string]int64
+
+	quotaSigMu   sync.Mutex
+	lastQuotaSig string
 }
 
 // New constructs the HTTP/WebSocket bridge server.
@@ -207,10 +223,65 @@ func (s *Server) RotateBootstrapToken(configPath string) (string, error) {
 	return tok, nil
 }
 
+// SetTunnel attaches an optional remote tunnel provider (embedded Tailscale Funnel).
+func (s *Server) SetTunnel(tp TunnelProvider) {
+	s.tunnel = tp
+}
+
+// EnableTunnel starts the embedded 5G remote tunnel.
+func (s *Server) EnableTunnel() error {
+	if s.tunnel == nil {
+		return errors.New("tunnel provider not configured")
+	}
+	return s.tunnel.Enable()
+}
+
+// DisableTunnel stops the embedded 5G remote tunnel.
+func (s *Server) DisableTunnel() error {
+	if s.tunnel == nil {
+		return nil
+	}
+	return s.tunnel.Disable()
+}
+
+// LogoutTunnel logs out and clears embedded Tailscale credentials.
+func (s *Server) LogoutTunnel() error {
+	if s.tunnel == nil {
+		return nil
+	}
+	return s.tunnel.Logout()
+}
+
 // StatusSummary builds a live telemetry snapshot for the Antigravity Sidecar UI and MCP tools.
 func (s *Server) StatusSummary(ctx context.Context) map[string]any {
-	snap, _ := s.quota.Snapshot(ctx)
-	payload := s.cfg.BuildPairingPayload(s.cfg.BootstrapToken)
+	return s.StatusSummaryWithRefresh(ctx, false)
+}
+
+// StatusSummaryWithRefresh builds a telemetry snapshot, optionally bypassing provider caches.
+func (s *Server) StatusSummaryWithRefresh(ctx context.Context, forceQuota bool) map[string]any {
+	var snap *quotamonitor.QuotaSnapshot
+	var err error
+	if forceQuota {
+		snap, err = s.quota.RefreshSnapshot(ctx)
+	} else {
+		snap, err = s.quota.Snapshot(ctx)
+	}
+	if err == nil && snap != nil {
+		s.broadcastQuotaIfChanged(snap)
+	}
+	var extraEndpoints []string
+	var tunnelStatus tsfunnel.Status
+	if s.tunnel != nil {
+		extraEndpoints = s.tunnel.Endpoints()
+		tunnelStatus = s.tunnel.Status()
+	} else {
+		tunnelStatus = tsfunnel.Status{
+			Enabled:  false,
+			State:    tsfunnel.StateDisabled,
+			Hostname: tsfunnel.SanitizeHostname(s.cfg.HostName),
+		}
+	}
+	payload := s.cfg.BuildPairingPayloadWithExtra(s.cfg.BootstrapToken, extraEndpoints)
 	return map[string]any{
 		"hostName":         s.cfg.HostName,
 		"listenAddr":       s.cfg.ListenAddr,
@@ -218,6 +289,7 @@ func (s *Server) StatusSummary(ctx context.Context) map[string]any {
 		"connectedClients": s.ConnectedClientCount(),
 		"endpoints":        payload.Endpoints,
 		"pairing":          payload,
+		"tunnel":           tunnelStatus,
 		"quota":            snap,
 		"recentAlerts":     s.notifier.Recent(10),
 	}
@@ -290,10 +362,13 @@ func (s *Server) handleInternalHook(w http.ResponseWriter, r *http.Request) {
 
 // OnStepsAppended bridges brainwatcher updates onto active WS channels and alert triggers.
 func (s *Server) OnStepsAppended(convID string, steps []brainwatcher.TranscriptStep, stats brainwatcher.ConversationStats) {
-	s.broadcast("session:"+convID, "step.upsert", map[string]any{
-		"conversationId": convID,
-		"steps":          steps,
-	})
+	visible := brainwatcher.CompactStepsForClient(steps)
+	if len(visible) > 0 {
+		s.broadcast("session:"+convID, "step.upsert", map[string]any{
+			"conversationId": convID,
+			"steps":          visible,
+		})
+	}
 	if card, err := s.buildSessionCard(convID); err == nil {
 		s.broadcast("$global", "session.summary", card)
 		if stats.NeedsConfirm {
@@ -310,8 +385,8 @@ func (s *Server) OnStepsAppended(convID string, steps []brainwatcher.TranscriptS
 			s.emitAlert(al)
 		}
 	}
-	if snap, err := s.quota.Snapshot(context.Background()); err == nil {
-		s.broadcast("$global", "quota.updated", snap)
+	if snap, err := s.quota.RefreshSnapshot(context.Background()); err == nil {
+		s.broadcastQuotaIfChanged(snap)
 	}
 }
 
@@ -327,20 +402,62 @@ func (s *Server) OnArtifactChange(convID string) {
 	}
 }
 
-// StartStatePoller periodically checks conversation running->idle transitions for TASK_COMPLETED alerts.
+// StartStatePoller periodically checks conversation running->idle transitions and live quota changes.
 func (s *Server) StartStatePoller(ctx context.Context) {
 	ticker := time.NewTicker(4 * time.Second)
 	go func() {
 		defer ticker.Stop()
+		ticks := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				s.checkCompletionTransitions()
+				ticks++
+				if ticks%4 == 0 && s.ConnectedClientCount() > 0 {
+					if snap, err := s.quota.RefreshSnapshot(ctx); err == nil && snap != nil {
+						s.broadcastQuotaIfChanged(snap)
+					}
+				}
 			}
 		}
 	}()
+}
+
+func quotaSignature(snap *quotamonitor.QuotaSnapshot) string {
+	if snap == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(snap.SubscriptionTier)
+	for _, p := range snap.Pools {
+		var r5, r7 int64
+		if p.Reset5hAt != nil {
+			r5 = *p.Reset5hAt
+		}
+		if p.Reset7dAt != nil {
+			r7 = *p.Reset7dAt
+		}
+		fmt.Fprintf(&b, "|%s:%d:%d:%d:%d:%s", p.PoolID, p.Remaining5hPct, r5, p.Remaining7dPct, r7, p.Source)
+	}
+	return b.String()
+}
+
+func (s *Server) broadcastQuotaIfChanged(snap *quotamonitor.QuotaSnapshot) {
+	if snap == nil {
+		return
+	}
+	sig := quotaSignature(snap)
+	s.quotaSigMu.Lock()
+	changed := sig != s.lastQuotaSig
+	if changed {
+		s.lastQuotaSig = sig
+	}
+	s.quotaSigMu.Unlock()
+	if changed {
+		s.broadcast("$global", "quota.updated", snap)
+	}
 }
 
 func (s *Server) checkCompletionTransitions() {
@@ -466,7 +583,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	if req.RequestID != "" && isIdempotentMethod(req.Method) && resp.OK {
 		s.saveIdempotent(req.RequestID, resp)
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSONForRequest(w, r, http.StatusOK, resp)
 }
 
 func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
@@ -493,10 +610,11 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		})
 
 	case "quota.get":
-		snap, err := s.quota.Snapshot(ctx)
+		snap, err := s.quota.RefreshSnapshot(ctx)
 		if err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
 		}
+		s.broadcastQuotaIfChanged(snap)
 		return okResp(snap)
 
 	case "quota.calibrate":
@@ -508,6 +626,9 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		if err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
 		}
+		s.quotaSigMu.Lock()
+		s.lastQuotaSig = quotaSignature(snap)
+		s.quotaSigMu.Unlock()
 		s.broadcast("$global", "quota.updated", snap)
 		return okResp(snap)
 
@@ -559,7 +680,7 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			}
 			return errResp("INTERNAL_ERROR", err.Error())
 		}
-		steps, hasMore, err := s.watcher.ReadSteps(p.ConversationID, p.BeforeStep, p.Limit)
+		steps, hasMore, err := s.watcher.ReadStepsForClient(p.ConversationID, p.BeforeStep, p.Limit)
 		if err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
 		}
@@ -682,7 +803,7 @@ func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, errResp(code, err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, okResp(page))
+	writeJSONForRequest(w, r, http.StatusOK, okResp(page))
 }
 
 func (s *Server) handleFileRaw(w http.ResponseWriter, r *http.Request) {
@@ -754,7 +875,7 @@ func (s *Server) handleMuxWS(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		for frame := range c.send {
-			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
 			if err := conn.WriteJSON(frame); err != nil {
 				_ = conn.Close()
 				return
@@ -825,7 +946,7 @@ func (s *Server) subscribeClient(c *wsClient, channel string) {
 	} else if strings.HasPrefix(channel, "session:") {
 		convID := strings.TrimPrefix(channel, "session:")
 		card, _ := s.buildSessionCard(convID)
-		steps, hasMore, _ := s.watcher.ReadSteps(convID, 0, 80)
+		steps, hasMore, _ := s.watcher.ReadStepsForClient(convID, 0, 80)
 		artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", convID))
 		payload = map[string]any{
 			"session":   card,
@@ -1036,4 +1157,25 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeJSONForRequest(w http.ResponseWriter, r *http.Request, status int, payload any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if buf.Len() > 1024 && r != nil && strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(status)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write(buf.Bytes())
+		_ = gz.Close()
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(buf.Bytes())
 }

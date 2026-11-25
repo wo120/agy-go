@@ -53,7 +53,7 @@ class AlwaysOnService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureChannel()
         val host = intent?.getStringExtra(EXTRA_HOST) ?: "Antigravity"
-        val status = intent?.getStringExtra(EXTRA_STATUS) ?: "$host · 已直连"
+        val status = intent?.getStringExtra(EXTRA_STATUS) ?: "$host · 未连接"
 
         val openIntent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)

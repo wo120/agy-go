@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:agy_client/agy_client.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 typedef NotificationReplyHandler = Future<void> Function(String conversationId, String replyText);
@@ -12,6 +13,11 @@ class NativeBridge {
 
   static final NativeBridge instance = NativeBridge._();
   static const MethodChannel _channel = MethodChannel('agy/native');
+
+  @visibleForTesting
+  bool? forceAndroidForTest;
+
+  bool get _isAndroid => forceAndroidForTest ?? Platform.isAndroid;
 
   NotificationReplyHandler? onNotificationReply;
   NotificationTapHandler? onNotificationTap;
@@ -43,7 +49,7 @@ class NativeBridge {
   }
 
   Future<void> startAlwaysOnService({required String hostName, required String statusText}) async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod('startAlwaysOnService', {
         'hostName': hostName,
@@ -53,14 +59,14 @@ class NativeBridge {
   }
 
   Future<void> stopAlwaysOnService() async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod('stopAlwaysOnService');
     } catch (_) {}
   }
 
   Future<void> showAgentAlert(AgentAlert alert) async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod('showAgentAlert', {
         'alertId': alert.alertId,
@@ -75,14 +81,14 @@ class NativeBridge {
   }
 
   Future<void> requestPermissions() async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod('requestPermissions');
     } catch (_) {}
   }
 
   Future<void> openBatteryOptimizationSettings() async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroid) return;
     try {
       await _channel.invokeMethod('openBatterySettings');
     } catch (_) {}

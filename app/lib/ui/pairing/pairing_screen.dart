@@ -22,6 +22,16 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
   bool _scanning = false;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(hostConnectionProvider.notifier).verifyConnection();
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _jsonCtrl.dispose();
     _endpointCtrl.dispose();
@@ -58,9 +68,16 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                   children: [
                     Text(host.connectionBanner, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 6),
-                    Text('当前节点：${host.activeEndpoint ?? "-"}', style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary)),
                     Text(
-                      '桌面 Antigravity 状态：${host.desktopOnline ? "在线可发送指令" : "未运行（仅历史只读）"}',
+                      host.status == MuxConnectionStatus.connected
+                          ? '当前节点：${host.activeEndpoint ?? "-"}'
+                          : '目标节点：${host.activeEndpoint ?? "-"}',
+                      style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
+                    ),
+                    Text(
+                      host.status == MuxConnectionStatus.connected
+                          ? '桌面 Antigravity 状态：${host.desktopOnline ? "在线可发送指令" : "未运行（仅历史只读）"}'
+                          : '桥接连接状态：未连接宿主机（请确认同一局域网或开启 Tailscale）',
                       style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
                     ),
                     const SizedBox(height: 12),

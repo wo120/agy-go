@@ -25,6 +25,7 @@ class HostConnectionState {
     this.alwaysOnEnabled = true,
     this.workspaces = const [],
     this.models = const [],
+    this.transportEpoch = 0,
   });
 
   final PairingPayload? pairing;
@@ -37,6 +38,7 @@ class HostConnectionState {
   final bool alwaysOnEnabled;
   final List<WorkspaceInfo> workspaces;
   final List<ModelOption> models;
+  final int transportEpoch;
 
   bool get isPaired => pairing != null && pairing!.token.isNotEmpty;
   String get hostName => pairing?.hostName ?? '未连接主机';
@@ -63,6 +65,7 @@ class HostConnectionState {
     String? activeEndpoint,
     bool? isDirect,
     int? rttMs,
+    bool clearRtt = false,
     bool? desktopOnline,
     MuxConnectionStatus? status,
     String? errorMessage,
@@ -70,18 +73,20 @@ class HostConnectionState {
     bool? alwaysOnEnabled,
     List<WorkspaceInfo>? workspaces,
     List<ModelOption>? models,
+    int? transportEpoch,
   }) {
     return HostConnectionState(
       pairing: clearPairing ? null : (pairing ?? this.pairing),
       activeEndpoint: clearPairing ? null : (activeEndpoint ?? this.activeEndpoint),
       isDirect: isDirect ?? this.isDirect,
-      rttMs: rttMs ?? this.rttMs,
+      rttMs: clearRtt ? null : (rttMs ?? this.rttMs),
       desktopOnline: desktopOnline ?? this.desktopOnline,
       status: status ?? this.status,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       alwaysOnEnabled: alwaysOnEnabled ?? this.alwaysOnEnabled,
       workspaces: workspaces ?? this.workspaces,
       models: models ?? this.models,
+      transportEpoch: transportEpoch ?? this.transportEpoch,
     );
   }
 }
@@ -94,6 +99,9 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
   StreamSubscription? _rttSub;
   StreamSubscription? _msgSub;
   String? _activeConversationId;
+  bool _reprobingEndpoints = false;
+  bool _verifyingConnection = false;
+  String? _lastAlwaysOnBanner;
 
   AgyHttpCarrier? get carrier => _carrier;
   AgyMuxClient? get mux => _mux;
@@ -125,8 +133,11 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     state = state.copyWith(
       pairing: payload,
       status: MuxConnectionStatus.connecting,
+      desktopOnline: false,
+      clearRtt: true,
       clearError: true,
     );
+    _syncAlwaysOnNotification();
 
     if (persist) {
       try {
@@ -139,34 +150,48 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     final direct = probe?.isDirect ?? isDirectEndpointUrl(chosenUrl);
 
     _carrier = AgyHttpCarrier(baseUrl: chosenUrl, token: payload.token);
-    _mux = AgyMuxClient(baseUrl: chosenUrl, token: payload.token);
+    _mux = AgyMuxClient(
+      baseUrl: chosenUrl,
+      token: payload.token,
+      onReconnectNeeded: _handleMuxReconnectNeeded,
+    );
 
     state = state.copyWith(
       activeEndpoint: chosenUrl,
       isDirect: direct,
       rttMs: probe?.rttMs,
+      clearRtt: probe == null,
       desktopOnline: probe?.desktopOnline ?? false,
+      transportEpoch: state.transportEpoch + 1,
     );
 
     _statusSub = _mux!.statusStream.listen((st) {
-      state = state.copyWith(status: st);
-      if (st == MuxConnectionStatus.connected && state.alwaysOnEnabled) {
-        NativeBridge.instance.startAlwaysOnService(
-          hostName: state.hostName,
-          statusText: state.connectionBanner,
-        );
+      final wasConnected = state.status == MuxConnectionStatus.connected;
+      if (st != MuxConnectionStatus.connected) {
+        state = state.copyWith(status: st, desktopOnline: false, clearRtt: true);
+      } else {
+        state = state.copyWith(status: st);
+        if (!wasConnected) {
+          unawaited(refreshAll());
+        }
       }
+      _syncAlwaysOnNotification();
     });
 
     _rttSub = _mux!.rttStream.listen((info) {
+      final hadRtt = state.rttMs != null;
       state = state.copyWith(rttMs: info.rttMs, desktopOnline: info.desktopOnline);
+      if (!hadRtt && state.status == MuxConnectionStatus.connected) {
+        _syncAlwaysOnNotification();
+      }
     });
 
     _msgSub = _mux!.messages.listen(_routeMuxMessage);
     _mux!.connect();
 
-    // Hydrate initial state via RPC as well for fast first paint.
-    await refreshAll();
+    if (probe != null) {
+      await refreshAll();
+    }
   }
 
   Future<void> reconnect() async {
@@ -176,25 +201,100 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     }
   }
 
+  /// Actively verifies live connectivity (e.g. on app resume, pairing page open, or failed RPC).
+  Future<void> verifyConnection() async {
+    if (_verifyingConnection) return;
+    final p = state.pairing;
+    if (p == null || p.endpoints.isEmpty) return;
+
+    _verifyingConnection = true;
+    try {
+      final probe = await AgyHttpCarrier.probeBestEndpoint(
+        p.endpoints,
+        timeout: const Duration(milliseconds: 1800),
+      );
+      if (probe == null) {
+        final alive = _mux != null && await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1200));
+        if (!alive && state.status == MuxConnectionStatus.connected) {
+          state = state.copyWith(
+            status: MuxConnectionStatus.reconnecting,
+            desktopOnline: false,
+            clearRtt: true,
+          );
+          _syncAlwaysOnNotification();
+        }
+        return;
+      }
+
+      if (probe.endpoint != state.activeEndpoint || _mux == null || _carrier == null) {
+        await connectWithPairing(p, persist: false);
+        return;
+      }
+
+      if (state.status == MuxConnectionStatus.connected) {
+        final alive = await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1500));
+        if (alive) {
+          state = state.copyWith(
+            rttMs: probe.rttMs,
+            desktopOnline: probe.desktopOnline,
+            isDirect: probe.isDirect,
+          );
+          unawaited(refreshAll());
+        }
+      } else {
+        await connectWithPairing(p, persist: false);
+      }
+    } finally {
+      _verifyingConnection = false;
+    }
+  }
+
+  Future<void> _handleMuxReconnectNeeded() async {
+    if (_reprobingEndpoints) return;
+    final p = state.pairing;
+    if (p == null || p.endpoints.length <= 1) return;
+    _reprobingEndpoints = true;
+    try {
+      final probe = await AgyHttpCarrier.probeBestEndpoint(p.endpoints);
+      if (probe != null && probe.endpoint != state.activeEndpoint) {
+        await connectWithPairing(p, persist: false);
+      }
+    } finally {
+      _reprobingEndpoints = false;
+    }
+  }
+
   Future<void> disconnectAndClear() async {
     _teardownTransport();
     try {
       await _storage.delete(key: _kPairingStorageKey);
     } catch (_) {}
+    _lastAlwaysOnBanner = null;
     await NativeBridge.instance.stopAlwaysOnService();
     state = const HostConnectionState();
   }
 
   Future<void> setAlwaysOn(bool enabled) async {
     state = state.copyWith(alwaysOnEnabled: enabled);
-    if (enabled && state.status == MuxConnectionStatus.connected) {
-      await NativeBridge.instance.startAlwaysOnService(
-        hostName: state.hostName,
-        statusText: state.connectionBanner,
-      );
+    if (enabled && state.isPaired) {
+      _syncAlwaysOnNotification(force: true);
     } else if (!enabled) {
+      _lastAlwaysOnBanner = null;
       await NativeBridge.instance.stopAlwaysOnService();
     }
+  }
+
+  void _syncAlwaysOnNotification({bool force = false}) {
+    if (!state.alwaysOnEnabled || !state.isPaired) return;
+    final banner = state.connectionBanner;
+    if (!force && banner == _lastAlwaysOnBanner) return;
+    _lastAlwaysOnBanner = banner;
+    unawaited(
+      NativeBridge.instance.startAlwaysOnService(
+        hostName: state.hostName,
+        statusText: banner,
+      ),
+    );
   }
 
   Future<void> refreshAll() async {
@@ -220,7 +320,8 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
       );
       ref.read(alertsStateProvider.notifier).setAlerts(results[3] as List<AgentAlert>);
     } catch (e) {
-      state = state.copyWith(errorMessage: e.toString());
+      state = state.copyWith(desktopOnline: false, errorMessage: e.toString());
+      unawaited(verifyConnection());
     }
   }
 
@@ -243,9 +344,11 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
         }
       } else if (msg.type == 'event') {
         if (msg.event == 'quota.updated' && msg.data is Map<String, dynamic>) {
-          ref.read(quotaStateProvider.notifier).applySnapshot(
-                QuotaSnapshot.fromJson(msg.data as Map<String, dynamic>),
-              );
+          final snap = QuotaSnapshot.fromJson(msg.data as Map<String, dynamic>);
+          ref.read(quotaStateProvider.notifier).applySnapshot(snap);
+          if (snap.models.isNotEmpty) {
+            state = state.copyWith(models: snap.models);
+          }
         } else if (msg.event == 'session.summary' && msg.data is Map<String, dynamic>) {
           ref.read(sessionsStateProvider.notifier).upsertCard(
                 SessionCard.fromJson(msg.data as Map<String, dynamic>),
@@ -562,32 +665,84 @@ class ChatSessionState {
 
 class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, String> {
   StreamSubscription? _muxSub;
+  AgyMuxClient? _boundMux;
+  bool _disposed = false;
 
   @override
   ChatSessionState build(String conversationId) {
+    _disposed = false;
     final hostNotifier = ref.read(hostConnectionProvider.notifier);
     hostNotifier.setActiveConversation(conversationId);
 
-    final mux = hostNotifier.mux;
-    if (mux != null) {
-      mux.subscribe('session:$conversationId');
-      _muxSub = mux.messages.listen((msg) {
-        if (msg.channel != 'session:$conversationId') return;
-        _onChannelMessage(msg);
-      });
-    }
+    _bindMux(hostNotifier.mux, conversationId);
+
+    ref.listen<HostConnectionState>(hostConnectionProvider, (prev, next) {
+      if (_disposed) return;
+      if (prev?.transportEpoch != next.transportEpoch) {
+        _bindMux(ref.read(hostConnectionProvider.notifier).mux, conversationId);
+        unawaited(loadInitial(conversationId));
+      } else if (prev?.status != MuxConnectionStatus.connected &&
+          next.status == MuxConnectionStatus.connected &&
+          (state.loading || state.error != null || state.steps.isEmpty)) {
+        unawaited(loadInitial(conversationId));
+      }
+    });
 
     ref.onDispose(() {
-      _muxSub?.cancel();
-      hostNotifier.mux?.unsubscribe('session:$conversationId');
+      _disposed = true;
+      _unbindMux(conversationId);
       hostNotifier.setActiveConversation(null);
     });
 
+    final cachedCard = _findCachedCard(conversationId);
     Future.microtask(() => loadInitial(conversationId));
-    return const ChatSessionState();
+    return ChatSessionState(session: cachedCard);
+  }
+
+  SessionCard? _findCachedCard(String conversationId) {
+    final list = ref.read(sessionsStateProvider);
+    for (final c in list.pinned) {
+      if (c.conversationId == conversationId) return c;
+    }
+    for (final c in list.regular) {
+      if (c.conversationId == conversationId) return c;
+    }
+    for (final g in list.groups) {
+      for (final c in g.sessions) {
+        if (c.conversationId == conversationId) return c;
+      }
+    }
+    return null;
+  }
+
+  void _bindMux(AgyMuxClient? mux, String conversationId) {
+    if (identical(_boundMux, mux)) return;
+    _unbindMux(conversationId);
+    _boundMux = mux;
+    if (mux == null) return;
+    // Listen BEFORE subscribing so an immediate snapshot frame is never missed.
+    _muxSub = mux.messages.listen((msg) {
+      if (_disposed || msg.channel != 'session:$conversationId') return;
+      _onChannelMessage(msg);
+    });
+    mux.subscribe('session:$conversationId');
+  }
+
+  void _unbindMux(String conversationId) {
+    _muxSub?.cancel();
+    _muxSub = null;
+    _boundMux?.unsubscribe('session:$conversationId');
+    _boundMux = null;
+  }
+
+  Future<void> reload() async {
+    if (_disposed) return;
+    state = state.copyWith(loading: true, clearError: true);
+    await loadInitial(arg);
   }
 
   Future<void> loadInitial(String conversationId) async {
+    if (_disposed) return;
     final c = ref.read(hostConnectionProvider.notifier).carrier;
     if (c == null) {
       state = state.copyWith(loading: false, error: '尚未连接主机');
@@ -595,6 +750,7 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
     }
     try {
       final res = await c.getSession(conversationId);
+      if (_disposed) return;
       final rows = TranscriptReducer.reduce(res.steps);
       state = state.copyWith(
         session: res.session,
@@ -609,13 +765,14 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         unawaited(c.markRead(conversationId, res.steps.last.stepIndex));
       }
     } catch (e) {
+      if (_disposed) return;
       state = state.copyWith(loading: false, error: e.toString());
     }
   }
 
   Future<void> sendMessage(String text) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty || state.sending) return;
+    if (trimmed.isEmpty || state.sending || _disposed) return;
     final c = ref.read(hostConnectionProvider.notifier).carrier;
     if (c == null) return;
 
@@ -623,63 +780,72 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
     final reqId = c.nextRequestId();
     try {
       await c.sendMessage(arg, trimmed, requestId: reqId);
+      if (_disposed) return;
       state = state.copyWith(sending: false);
     } on BridgeRemoteException catch (e) {
+      if (_disposed) return;
       state = state.copyWith(sending: false, error: e.message);
     } catch (e) {
+      if (_disposed) return;
       state = state.copyWith(sending: false, error: '发送失败：$e');
     }
   }
 
   void _onChannelMessage(MuxEventMessage msg) {
-    if (msg.type == 'snapshot' && msg.data is Map<String, dynamic>) {
-      final d = msg.data as Map<String, dynamic>;
-      final steps = ((d['steps'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(TranscriptStep.fromJson)
-          .toList();
-      final artifacts = ((d['artifacts'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(ArtifactItem.fromJson)
-          .toList();
-      final session = d['session'] is Map<String, dynamic>
-          ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
-          : state.session;
-      state = state.copyWith(
-        session: session,
-        steps: steps,
-        rows: TranscriptReducer.reduce(steps),
-        artifacts: artifacts,
-        loading: false,
-      );
-    } else if (msg.type == 'event' && msg.event == 'step.upsert' && msg.data is Map<String, dynamic>) {
-      final d = msg.data as Map<String, dynamic>;
-      final incoming = ((d['steps'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(TranscriptStep.fromJson)
-          .toList();
-      if (incoming.isEmpty) return;
+    if (_disposed) return;
+    try {
+      if (msg.type == 'snapshot' && msg.data is Map<String, dynamic>) {
+        final d = msg.data as Map<String, dynamic>;
+        final steps = ((d['steps'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TranscriptStep.fromJson)
+            .toList();
+        final artifacts = ((d['artifacts'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ArtifactItem.fromJson)
+            .toList();
+        final session = d['session'] is Map<String, dynamic>
+            ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
+            : state.session;
+        state = state.copyWith(
+          session: session,
+          steps: steps,
+          rows: TranscriptReducer.reduce(steps),
+          artifacts: artifacts,
+          loading: false,
+          clearError: true,
+        );
+      } else if (msg.type == 'event' && msg.event == 'step.upsert' && msg.data is Map<String, dynamic>) {
+        final d = msg.data as Map<String, dynamic>;
+        final incoming = ((d['steps'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TranscriptStep.fromJson)
+            .toList();
+        if (incoming.isEmpty) return;
 
-      final merged = Map<int, TranscriptStep>.fromEntries(state.steps.map((s) => MapEntry(s.stepIndex, s)));
-      for (final s in incoming) {
-        merged[s.stepIndex] = s;
+        final merged = Map<int, TranscriptStep>.fromEntries(state.steps.map((s) => MapEntry(s.stepIndex, s)));
+        for (final s in incoming) {
+          merged[s.stepIndex] = s;
+        }
+        final sorted = merged.values.toList()..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+        state = state.copyWith(
+          steps: sorted,
+          rows: TranscriptReducer.reduce(sorted),
+        );
+        final c = ref.read(hostConnectionProvider.notifier).carrier;
+        if (c != null && sorted.isNotEmpty) {
+          unawaited(c.markRead(arg, sorted.last.stepIndex));
+        }
+      } else if (msg.type == 'event' && msg.event == 'artifact.changed' && msg.data is Map<String, dynamic>) {
+        final d = msg.data as Map<String, dynamic>;
+        final artifacts = ((d['artifacts'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ArtifactItem.fromJson)
+            .toList();
+        state = state.copyWith(artifacts: artifacts);
       }
-      final sorted = merged.values.toList()..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
-      state = state.copyWith(
-        steps: sorted,
-        rows: TranscriptReducer.reduce(sorted),
-      );
-      final c = ref.read(hostConnectionProvider.notifier).carrier;
-      if (c != null && sorted.isNotEmpty) {
-        unawaited(c.markRead(arg, sorted.last.stepIndex));
-      }
-    } else if (msg.type == 'event' && msg.event == 'artifact.changed' && msg.data is Map<String, dynamic>) {
-      final d = msg.data as Map<String, dynamic>;
-      final artifacts = ((d['artifacts'] as List?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(ArtifactItem.fromJson)
-          .toList();
-      state = state.copyWith(artifacts: artifacts);
+    } catch (_) {
+      // Ignore malformed incremental frame; HTTP loadInitial / reload provides explicit error feedback.
     }
   }
 }

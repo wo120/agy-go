@@ -143,3 +143,61 @@ func TestCompactTranscriptStringifiedToolCallArgs(t *testing.T) {
 		t.Fatalf("expected questions normalized to []any, got %T (%#v)", steps[1].ToolCalls[0].Args["questions"], steps[1].ToolCalls[0].Args["questions"])
 	}
 }
+
+func TestReadStepsForClientCompactsNoiseAndHandlesLargeLines(t *testing.T) {
+	tmp := t.TempDir()
+	st, err := statestore.Open(filepath.Join(tmp, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	brainDir := filepath.Join(tmp, "brain")
+	logsDir := filepath.Join(brainDir, "conv-slim", ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a payload with GENERIC/SYSTEM_MESSAGE noise and a large write_file tool arg.
+	largeBuf := make([]byte, 32*1024)
+	for i := range largeBuf {
+		largeBuf[i] = 'a'
+	}
+	lines := "" +
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-24T13:00:00Z","content":"hi"}` + "\n" +
+		`{"step_index":1,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-11-24T13:00:01Z","content":"injected"}` + "\n" +
+		`{"step_index":2,"source":"SYSTEM","type":"GENERIC","status":"DONE","created_at":"2026-11-24T13:00:02Z","content":"` + string(largeBuf) + `"}` + "\n" +
+		`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-24T13:00:03Z","content":"done","tool_calls":[{"name":"write_file","args":{"Content":"` + string(largeBuf) + `","ArtifactMetadata":{"RequestFeedback":true}}},{"name":"run_command","args":{"CommandLine":"echo 1"}},{"name":"ask_question","args":{"questions":[{"question":"继续？","options":["是","否"]}]}}]}` + "\n"
+
+	if err := os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(brainDir, st, EventCallbacks{})
+	steps, hasMore, err := w.ReadStepsForClient("conv-slim", 0, 50)
+	if err != nil || hasMore {
+		t.Fatalf("ReadStepsForClient failed: hasMore=%v err=%v", hasMore, err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected only USER_INPUT and PLANNER_RESPONSE (2 steps), got %d", len(steps))
+	}
+	if steps[0].StepIndex != 0 || steps[1].StepIndex != 3 {
+		t.Fatalf("unexpected step indices: %d, %d", steps[0].StepIndex, steps[1].StepIndex)
+	}
+	tcs := steps[1].ToolCalls
+	if len(tcs) != 3 {
+		t.Fatalf("expected 3 tool calls preserved, got %d", len(tcs))
+	}
+	if _, hasHeavy := tcs[0].Args["Content"]; hasHeavy {
+		t.Fatalf("expected heavy write_file Content stripped, got %#v", tcs[0].Args)
+	}
+	if _, hasMeta := tcs[0].Args["ArtifactMetadata"]; !hasMeta {
+		t.Fatalf("expected ArtifactMetadata preserved on write_file")
+	}
+	if len(tcs[1].Args) != 0 {
+		t.Fatalf("expected run_command args stripped, got %#v", tcs[1].Args)
+	}
+	if _, hasQ := tcs[2].Args["questions"]; !hasQ {
+		t.Fatalf("expected ask_question questions preserved")
+	}
+}

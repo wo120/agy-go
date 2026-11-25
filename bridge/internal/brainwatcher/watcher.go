@@ -268,16 +268,10 @@ func (w *Watcher) scanConversation(convID string, emitEvents bool) ([]Transcript
 	var appended []TranscriptStep
 	var ledgerEntries []statestore.UsageEntry
 
-	scanner := bufio.NewScanner(bytes.NewReader(complete))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
+	if err := readLines(bytes.NewReader(complete), func(line []byte) {
 		var step TranscriptStep
 		if err := json.Unmarshal(line, &step); err != nil {
-			continue
+			return
 		}
 		enrichStep(&step)
 		appended = append(appended, step)
@@ -295,6 +289,8 @@ func (w *Watcher) scanConversation(convID string, emitEvents bool) ([]Transcript
 				OutputTokens:    step.OutputTokens,
 			})
 		}
+	}); err != nil {
+		return nil, curStats, err
 	}
 
 	if len(ledgerEntries) > 0 {
@@ -312,8 +308,59 @@ func (w *Watcher) scanConversation(convID string, emitEvents bool) ([]Transcript
 	return appended, curStats, nil
 }
 
+// IsClientVisibleStep returns true for transcript steps rendered in the mobile chat view.
+func IsClientVisibleStep(stepType string) bool {
+	return stepType != "GENERIC" && stepType != "SYSTEM_MESSAGE"
+}
+
+// CompactStepsForClient drops non-rendered internal tool output steps and strips heavy
+// non-interactive tool_calls arguments so mobile payloads stay small over high-latency links.
+func CompactStepsForClient(steps []TranscriptStep) []TranscriptStep {
+	out := make([]TranscriptStep, 0, len(steps))
+	for _, s := range steps {
+		if !IsClientVisibleStep(s.Type) {
+			continue
+		}
+		out = append(out, compactStepForClient(s))
+	}
+	return out
+}
+
+func compactStepForClient(s TranscriptStep) TranscriptStep {
+	if len(s.ToolCalls) == 0 {
+		return s
+	}
+	compacted := make([]ToolCall, 0, len(s.ToolCalls))
+	for _, tc := range s.ToolCalls {
+		switch tc.Name {
+		case "ask_question":
+			compacted = append(compacted, tc)
+		case "write_file", "edit_file":
+			var slimArgs map[string]any
+			if meta, ok := tc.Args["ArtifactMetadata"]; ok {
+				slimArgs = map[string]any{"ArtifactMetadata": meta}
+			}
+			compacted = append(compacted, ToolCall{Name: tc.Name, Args: slimArgs})
+		default:
+			compacted = append(compacted, ToolCall{Name: tc.Name})
+		}
+	}
+	s.ToolCalls = compacted
+	return s
+}
+
 // ReadSteps reads paginated transcript steps for a conversation, hydrating truncated_fields from transcript_full.jsonl.
 func (w *Watcher) ReadSteps(convID string, beforeStep, limit int) ([]TranscriptStep, bool, error) {
+	return w.readStepsInternal(convID, beforeStep, limit, false)
+}
+
+// ReadStepsForClient reads paginated mobile-visible steps, skipping internal GENERIC/SYSTEM_MESSAGE
+// noise before pagination and stripping heavy unused tool arguments.
+func (w *Watcher) ReadStepsForClient(convID string, beforeStep, limit int) ([]TranscriptStep, bool, error) {
+	return w.readStepsInternal(convID, beforeStep, limit, true)
+}
+
+func (w *Watcher) readStepsInternal(convID string, beforeStep, limit int, clientCompact bool) ([]TranscriptStep, bool, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 80
 	}
@@ -330,15 +377,15 @@ func (w *Watcher) ReadSteps(convID string, beforeStep, limit int) ([]TranscriptS
 	}
 
 	// Filter range before hydrating full fields so we only inspect needed steps.
-	var filtered []TranscriptStep
-	if beforeStep > 0 {
-		for _, s := range steps {
-			if s.StepIndex < beforeStep {
-				filtered = append(filtered, s)
-			}
+	filtered := make([]TranscriptStep, 0, len(steps))
+	for _, s := range steps {
+		if clientCompact && !IsClientVisibleStep(s.Type) {
+			continue
 		}
-	} else {
-		filtered = steps
+		if beforeStep > 0 && s.StepIndex >= beforeStep {
+			continue
+		}
+		filtered = append(filtered, s)
 	}
 
 	hasMore := false
@@ -357,7 +404,30 @@ func (w *Watcher) ReadSteps(convID string, beforeStep, limit int) ([]TranscriptS
 		hydrateFromFull(fullPath, filtered, needHydrate)
 	}
 
+	if clientCompact {
+		for i := range filtered {
+			filtered[i] = compactStepForClient(filtered[i])
+		}
+	}
+
 	return filtered, hasMore, nil
+}
+
+func readLines(r io.Reader, fn func(line []byte)) error {
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		raw, err := br.ReadBytes('\n')
+		line := bytes.TrimSpace(raw)
+		if len(line) > 0 {
+			fn(line)
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 func readJSONLFile(path string) ([]TranscriptStep, map[int]bool, error) {
@@ -369,24 +439,18 @@ func readJSONLFile(path string) ([]TranscriptStep, map[int]bool, error) {
 
 	var steps []TranscriptStep
 	truncated := make(map[int]bool)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
+	err = readLines(f, func(line []byte) {
 		var step TranscriptStep
 		if err := json.Unmarshal(line, &step); err != nil {
-			continue
+			return
 		}
 		enrichStep(&step)
 		if len(step.TruncatedFields) > 0 {
 			truncated[step.StepIndex] = true
 		}
 		steps = append(steps, step)
-	}
-	return steps, truncated, scanner.Err()
+	})
+	return steps, truncated, err
 }
 
 func hydrateFromFull(fullPath string, target []TranscriptStep, indexMap map[int]int) {
@@ -396,23 +460,17 @@ func hydrateFromFull(fullPath string, target []TranscriptStep, indexMap map[int]
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 128*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
+	_ = readLines(f, func(line []byte) {
 		var full TranscriptStep
 		if err := json.Unmarshal(line, &full); err != nil {
-			continue
+			return
 		}
 		if pos, ok := indexMap[full.StepIndex]; ok {
 			enrichStep(&full)
 			full.TruncatedFields = nil
 			target[pos] = full
 		}
-	}
+	})
 }
 
 func enrichStep(step *TranscriptStep) {

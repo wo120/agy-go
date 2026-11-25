@@ -1,11 +1,17 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:agy_client/agy_client.dart';
 import 'package:agy_mobile/state/app_state.dart';
+import 'package:agy_mobile/state/native_bridge.dart';
 import 'package:agy_mobile/theme/levity_theme.dart';
 import 'package:agy_mobile/ui/chat/chat_screen.dart';
 import 'package:agy_mobile/ui/home/home_screen.dart';
 import 'package:agy_mobile/ui/home/new_session_sheet.dart';
 import 'package:agy_mobile/ui/home/quota_card.dart';
+import 'package:agy_mobile/ui/pairing/pairing_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -459,4 +465,196 @@ void main() {
     expect(find.text('pro'), findsOneWidget);
     expect(find.textContaining('已回退为基础档位'), findsOneWidget);
   });
+
+  testWidgets('ChatScreen renders actionable error card with retry button on load failure', (tester) async {
+    var reloadCount = 0;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(() => _FailingChatSessionNotifier(() => reloadCount++)),
+        ],
+        child: MaterialApp(
+          theme: buildLevityTheme(),
+          home: const ChatScreen(conversationId: 'c-err'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('会话内容加载失败'), findsOneWidget);
+    expect(find.textContaining('Network request failed'), findsOneWidget);
+    await tester.tap(find.text('重新加载'));
+    await tester.pumpAndSettle();
+    expect(reloadCount, 1);
+  });
+
+  test('HostConnectionNotifier clears stale connected banner and updates AlwaysOn notification when host becomes unreachable', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final prevHttpOverrides = HttpOverrides.current;
+    HttpOverrides.global = null;
+    final serviceCalls = <String>[];
+    const channel = MethodChannel('agy/native');
+    NativeBridge.instance.forceAndroidForTest = true;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) async {
+        if (call.method == 'startAlwaysOnService') {
+          final args = (call.arguments as Map?) ?? const {};
+          serviceCalls.add('${args['statusText']}');
+        }
+        return true;
+      },
+    );
+    addTearDown(() {
+      HttpOverrides.global = prevHttpOverrides;
+      NativeBridge.instance.forceAndroidForTest = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+    });
+
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final baseUrl = 'http://127.0.0.1:${server.port}';
+    final sockets = <WebSocket>[];
+    var dropPings = false;
+    server.listen((req) async {
+      if (req.uri.path == '/api/v1/mux') {
+        final ws = await WebSocketTransformer.upgrade(req);
+        sockets.add(ws);
+        ws.listen((raw) {
+          if (dropPings) return;
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (frame['type'] == 'ping') {
+            ws.add(jsonEncode({
+              'type': 'pong',
+              'clientTs': frame['clientTs'],
+              'serverTs': DateTime.now().millisecondsSinceEpoch,
+              'desktopOnline': true,
+            }));
+          }
+        });
+        return;
+      }
+      if (req.uri.path == '/api/v1/health') {
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'ok': true, 'hostName': 'MacBook-Pro', 'desktopOnline': true}));
+        await req.response.close();
+        return;
+      }
+      req.response
+        ..statusCode = 200
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true, 'data': {}}));
+      await req.response.close();
+    });
+    addTearDown(() async {
+      for (final s in sockets) {
+        await s.close();
+      }
+      await server.close(force: true);
+    });
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    final notifier = container.read(hostConnectionProvider.notifier);
+    await notifier.connectWithPairing(
+      PairingPayload(version: 1, hostName: 'MacBook-Pro', endpoints: [baseUrl], token: 'tok'),
+      persist: false,
+    );
+
+    // Wait for WebSocket connected state.
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    while (container.read(hostConnectionProvider).status != MuxConnectionStatus.connected &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(container.read(hostConnectionProvider).status, MuxConnectionStatus.connected);
+    expect(serviceCalls.any((s) => s.contains('已直连')), isTrue);
+
+    // Simulate switching to 5G where server is unreachable (health fails & half-open WS stops answering pings).
+    dropPings = true;
+    await server.close(force: true);
+
+    await notifier.verifyConnection();
+
+    final after = container.read(hostConnectionProvider);
+    expect(after.status, MuxConnectionStatus.reconnecting);
+    expect(after.desktopOnline, isFalse);
+    expect(after.rttMs, isNull);
+    expect(after.connectionBanner, 'MacBook-Pro · 重连中...');
+    expect(after.connectionBanner.contains('已直连'), isFalse);
+    expect(serviceCalls.last, 'MacBook-Pro · 重连中...');
+  });
+
+  testWidgets('PairingScreen triggers verifyConnection on open and never displays 已直连 when reconnecting', (tester) async {
+    var verifyCount = 0;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(() => _ReconnectingHostNotifier(() => verifyCount++)),
+        ],
+        child: MaterialApp(
+          theme: buildLevityTheme(),
+          home: const PairingScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(verifyCount, 1);
+    expect(find.text('MacBook-Pro · 重连中...'), findsOneWidget);
+    expect(find.text('目标节点：http://192.168.1.10:8765'), findsOneWidget);
+    expect(find.textContaining('未连接宿主机'), findsOneWidget);
+    expect(find.textContaining('已直连'), findsNothing);
+  });
+}
+
+class _ReconnectingHostNotifier extends HostConnectionNotifier {
+  _ReconnectingHostNotifier(this.onVerify);
+
+  final VoidCallback onVerify;
+
+  @override
+  HostConnectionState build() {
+    return const HostConnectionState(
+      pairing: PairingPayload(
+        version: 1,
+        hostName: 'MacBook-Pro',
+        endpoints: ['http://192.168.1.10:8765'],
+        token: 'agy_live_test',
+      ),
+      activeEndpoint: 'http://192.168.1.10:8765',
+      isDirect: true,
+      desktopOnline: false,
+      status: MuxConnectionStatus.reconnecting,
+    );
+  }
+
+  @override
+  Future<void> verifyConnection() async {
+    onVerify();
+  }
+}
+
+class _FailingChatSessionNotifier extends ChatSessionNotifier {
+  _FailingChatSessionNotifier(this.onReload);
+
+  final VoidCallback onReload;
+
+  @override
+  ChatSessionState build(String conversationId) {
+    return const ChatSessionState(
+      loading: false,
+      error: 'CarrierException: Network request failed for sessions.get',
+    );
+  }
+
+  @override
+  Future<void> reload() async {
+    onReload();
+  }
 }
