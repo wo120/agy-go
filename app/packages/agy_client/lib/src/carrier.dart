@@ -97,7 +97,7 @@ class AgyHttpCarrier {
   /// Concurrently probes candidate LAN / Tailscale / public endpoints and returns the fastest reachable one.
   static Future<EndpointProbeResult?> probeBestEndpoint(
     List<String> endpoints, {
-    Duration timeout = const Duration(milliseconds: 1800),
+    Duration timeout = const Duration(seconds: 6),
     http.Client? httpClient,
   }) async {
     if (endpoints.isEmpty) return null;

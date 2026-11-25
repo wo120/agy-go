@@ -59,3 +59,39 @@ func TestExtractHelpURL(t *testing.T) {
 		t.Fatalf("expected DNS fallback URL, got %q", got)
 	}
 }
+
+func TestParseSystemProxy(t *testing.T) {
+	macSample := `<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7897
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7897
+  HTTPSProxy : 127.0.0.1
+  SOCKSEnable : 1
+  SOCKSPort : 7897
+  SOCKSProxy : 127.0.0.1
+}`
+	if got := parseDarwinScutilProxy(macSample); got != "http://127.0.0.1:7897" {
+		t.Fatalf("parseDarwinScutilProxy = %q, want http://127.0.0.1:7897", got)
+	}
+	if got := parseDarwinScutilProxy("HTTPEnable : 0\nHTTPSEnable : 0\n"); got != "" {
+		t.Fatalf("expected empty when proxy disabled, got %q", got)
+	}
+
+	winSample := `
+HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
+    ProxyEnable    REG_DWORD    0x1
+    ProxyServer    REG_SZ    127.0.0.1:7897
+`
+	if got := parseWindowsRegProxy(winSample); got != "http://127.0.0.1:7897" {
+		t.Fatalf("parseWindowsRegProxy = %q, want http://127.0.0.1:7897", got)
+	}
+	winMulti := `
+    ProxyEnable    REG_DWORD    0x1
+    ProxyServer    REG_SZ    http=127.0.0.1:8080;https=127.0.0.1:8443
+`
+	if got := parseWindowsRegProxy(winMulti); got != "http://127.0.0.1:8443" {
+		t.Fatalf("parseWindowsRegProxy multi = %q, want http://127.0.0.1:8443", got)
+	}
+}

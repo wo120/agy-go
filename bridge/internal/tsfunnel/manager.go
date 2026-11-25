@@ -346,6 +346,8 @@ func (m *Manager) captureUserLog(format string, args ...any) {
 }
 
 func (m *Manager) run(ctx context.Context, tsSrv *tsnet.Server, retryCh <-chan struct{}) {
+	proxyURL := ensureSystemProxyForTsnet()
+
 	if err := tsSrv.Start(); err != nil {
 		m.setError(tsSrv, fmt.Sprintf("启动内置 Tailscale 失败：%v", err))
 		return
@@ -365,7 +367,8 @@ func (m *Manager) run(ctx context.Context, tsSrv *tsnet.Server, retryCh <-chan s
 	}
 	defer watcher.Close()
 
-	loginTriggered := false
+	go m.pollAuthURL(ctx, tsSrv, lc, proxyURL)
+
 	servingStarted := false
 
 	for {
@@ -393,17 +396,13 @@ func (m *Manager) run(ctx context.Context, tsSrv *tsnet.Server, retryCh <-chan s
 
 		switch *n.State {
 		case ipn.NeedsLogin:
-			if !loginTriggered {
-				loginTriggered = true
-				go func() {
-					_ = lc.StartLoginInteractive(ctx)
-				}()
-			}
 			m.mu.Lock()
 			if m.tsSrv == tsSrv {
 				m.status.State = StateNeedsLogin
-				if m.status.Message == "" || m.status.State != StateNeedsLogin {
-					m.status.Message = "等待浏览器完成授权登录（支持 GitHub / Google）"
+				if m.status.AuthURL == "" {
+					m.status.Message = "正在向 Tailscale 控制面申请授权链接..."
+				} else {
+					m.status.Message = "请在浏览器中完成授权登录（支持 GitHub / Google）"
 				}
 			}
 			m.mu.Unlock()
@@ -421,6 +420,57 @@ func (m *Manager) run(ctx context.Context, tsSrv *tsnet.Server, retryCh <-chan s
 			if !servingStarted {
 				servingStarted = true
 				go m.startListenersLoop(ctx, tsSrv, lc, retryCh)
+			}
+		}
+	}
+}
+
+func (m *Manager) pollAuthURL(ctx context.Context, tsSrv *tsnet.Server, lc *local.Client, proxyURL string) {
+	startedAt := time.Now()
+	retriedInteractive := false
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			st, err := lc.StatusWithoutPeers(ctx)
+			if err != nil || st == nil {
+				continue
+			}
+			if st.BackendState == "Running" {
+				return
+			}
+			if st.AuthURL != "" {
+				m.mu.Lock()
+				if m.tsSrv == tsSrv {
+					m.status.State = StateNeedsLogin
+					m.status.AuthURL = st.AuthURL
+					m.status.Message = "请在浏览器中完成授权登录（支持 GitHub / Google）"
+				}
+				m.mu.Unlock()
+				return
+			}
+			elapsed := time.Since(startedAt)
+			if elapsed > 10*time.Second && !retriedInteractive && st.BackendState == "NeedsLogin" {
+				retriedInteractive = true
+				_ = lc.StartLoginInteractive(ctx)
+			}
+			if elapsed > 20*time.Second {
+				hint := "无法连接 controlplane.tailscale.com，请检查网络或代理设置"
+				if proxyURL != "" {
+					hint = fmt.Sprintf("经系统代理 %s 连接 controlplane.tailscale.com 超时，请确认代理可用", proxyURL)
+				}
+				if len(st.Health) > 0 {
+					hint = hint + "（" + strings.Join(st.Health, "; ") + "）"
+				}
+				m.mu.Lock()
+				if m.tsSrv == tsSrv && m.status.AuthURL == "" && m.status.State == StateNeedsLogin {
+					m.status.Message = hint
+				}
+				m.mu.Unlock()
 			}
 		}
 	}
