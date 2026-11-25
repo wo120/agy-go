@@ -2,8 +2,12 @@ package com.antigravity.mobile.notify
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -26,6 +30,9 @@ object NativeBridgePlugin : MethodChannel.MethodCallHandler {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var channel: MethodChannel? = null
     private var activityRef: Activity? = null
+    private var networkCallbackRegistered = false
+    private var pendingNetworkDispatch: Runnable? = null
+    private var lastNetworkKind: String? = null
 
     fun attach(activity: Activity, messenger: BinaryMessenger) {
         activityRef = activity
@@ -33,6 +40,57 @@ object NativeBridgePlugin : MethodChannel.MethodCallHandler {
         ch.setMethodCallHandler(this)
         channel = ch
         AlertNotifier.ensureChannels(activity.applicationContext)
+        registerNetworkMonitor(activity.applicationContext)
+    }
+
+    private fun registerNetworkMonitor(appCtx: Context) {
+        if (networkCallbackRegistered) return
+        try {
+            val cm = appCtx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            lastNetworkKind = currentNetworkKind(cm)
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    scheduleNetworkChanged(currentNetworkKind(cm))
+                }
+
+                override fun onLost(network: Network) {
+                    scheduleNetworkChanged(currentNetworkKind(cm))
+                }
+
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    scheduleNetworkChanged(kindFromCaps(caps))
+                }
+            })
+            networkCallbackRegistered = true
+        } catch (_: Exception) {
+            // Best-effort network monitoring; container ROMs without callback support fall back to mux watchdog.
+        }
+    }
+
+    private fun currentNetworkKind(cm: ConnectivityManager): String {
+        val active = cm.activeNetwork ?: return "none"
+        val caps = cm.getNetworkCapabilities(active) ?: return "none"
+        return kindFromCaps(caps)
+    }
+
+    private fun kindFromCaps(caps: NetworkCapabilities): String {
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+    }
+
+    private fun scheduleNetworkChanged(kind: String) {
+        if (kind == lastNetworkKind) return
+        lastNetworkKind = kind
+        pendingNetworkDispatch?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            channel?.invokeMethod("onNetworkChanged", mapOf("kind" to kind))
+        }
+        pendingNetworkDispatch = r
+        mainHandler.postDelayed(r, 650L)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {

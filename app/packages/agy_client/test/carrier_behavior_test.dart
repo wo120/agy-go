@@ -202,12 +202,15 @@ void main() {
     });
 
     test('never reports connected on unreachable port and detects silent half-open server', () async {
-      // 1. Unreachable port must transition connecting -> reconnecting without false connected.
+      // 1. Unreachable port must transition connecting -> reconnecting without false connected,
+      // and immediately fire onReconnectNeeded on the very first failure so mobile switches endpoints fast.
       final statuses = <MuxConnectionStatus>[];
+      var reconnectHints = 0;
       final badMux = AgyMuxClient(
         baseUrl: 'http://127.0.0.1:1',
         token: 'tok',
         connectTimeout: const Duration(milliseconds: 500),
+        onReconnectNeeded: () => reconnectHints++,
       );
       addTearDown(badMux.dispose);
       final sub = badMux.statusStream.listen(statuses.add);
@@ -218,6 +221,7 @@ void main() {
           .firstWhere((s) => s == MuxConnectionStatus.reconnecting)
           .timeout(const Duration(seconds: 3));
       expect(statuses, isNot(contains(MuxConnectionStatus.connected)));
+      expect(reconnectHints, greaterThanOrEqualTo(1));
 
       // 2. Silent server (never responds to ping) triggers half-open reconnect watchdog.
       final silentServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

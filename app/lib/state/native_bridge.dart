@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 typedef NotificationReplyHandler = Future<void> Function(String conversationId, String replyText);
 typedef NotificationTapHandler = void Function(String conversationId);
+typedef NetworkChangedHandler = void Function(String kind);
 
 /// Bridges Dart state to Android Kotlin AlwaysOnService & AlertNotifier via MethodChannel.
 class NativeBridge {
@@ -21,6 +22,7 @@ class NativeBridge {
 
   NotificationReplyHandler? onNotificationReply;
   NotificationTapHandler? onNotificationTap;
+  NetworkChangedHandler? onNetworkChanged;
   bool _initialized = false;
 
   void init() {
@@ -42,6 +44,11 @@ class NativeBridge {
           if (convId.isNotEmpty && onNotificationTap != null) {
             onNotificationTap!(convId);
           }
+          return true;
+        case 'onNetworkChanged':
+          final args = (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
+          final kind = (args['kind'] as String?) ?? 'other';
+          onNetworkChanged?.call(kind);
           return true;
       }
       return null;

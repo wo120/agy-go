@@ -97,9 +97,10 @@ class AgyHttpCarrier {
       };
 
   /// Concurrently probes candidate LAN / Tailscale / public endpoints and returns the fastest reachable one.
+  /// Direct LAN endpoints fail fast (<=2.5s) while public HTTPS endpoints get the full timeout for 5G TLS handshakes.
   static Future<EndpointProbeResult?> probeBestEndpoint(
     List<String> endpoints, {
-    Duration timeout = const Duration(seconds: 6),
+    Duration timeout = const Duration(seconds: 8),
     http.Client? httpClient,
   }) async {
     if (endpoints.isEmpty) return null;
@@ -117,10 +118,14 @@ class AgyHttpCarrier {
 
     for (final ep in endpoints) {
       final clean = ep.endsWith('/') ? ep.substring(0, ep.length - 1) : ep;
+      final direct = isDirectEndpointUrl(clean);
+      final epTimeout = direct && timeout > const Duration(milliseconds: 2500)
+          ? const Duration(milliseconds: 2500)
+          : timeout;
       final sw = Stopwatch()..start();
       client
           .get(Uri.parse('$clean/api/v1/health'))
-          .timeout(timeout)
+          .timeout(epTimeout)
           .then((resp) {
             sw.stop();
             if (resp.statusCode == 200) {
@@ -130,7 +135,7 @@ class AgyHttpCarrier {
                   EndpointProbeResult(
                     endpoint: clean,
                     rttMs: sw.elapsedMilliseconds,
-                    isDirect: isDirectEndpointUrl(clean),
+                    isDirect: direct,
                     hostName: (data['hostName'] as String?) ?? 'AntigravityHost',
                     desktopOnline: (data['desktopOnline'] as bool?) ?? false,
                   ),
@@ -380,9 +385,10 @@ class AgyMuxClient {
     required this.token,
     this.pingInterval = const Duration(seconds: 8),
     this.pongTimeout = const Duration(seconds: 14),
-    this.connectTimeout = const Duration(seconds: 6),
+    Duration? connectTimeout,
     this.onReconnectNeeded,
-  });
+  }) : connectTimeout = connectTimeout ??
+            (isDirectEndpointUrl(baseUrl) ? const Duration(seconds: 4) : const Duration(seconds: 10));
 
   final String baseUrl;
   final String token;
@@ -518,7 +524,7 @@ class AgyMuxClient {
     } catch (_) {
       if (_disposed || epoch != _socketEpoch) return;
       _consecutiveFailures++;
-      if (_consecutiveFailures == 2) {
+      if (_consecutiveFailures >= 1) {
         onReconnectNeeded?.call();
       }
       _scheduleReconnect();
@@ -590,6 +596,7 @@ class AgyMuxClient {
       final idleMs = DateTime.now().millisecondsSinceEpoch - _lastActivityMs;
       if (idleMs > pongTimeout.inMilliseconds) {
         // Half-open TCP socket detected (e.g. Wi-Fi <-> 5G switch or container freeze).
+        onReconnectNeeded?.call();
         _scheduleReconnect();
         return;
       }

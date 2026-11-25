@@ -635,7 +635,7 @@ class _ReconnectingHostNotifier extends HostConnectionNotifier {
   }
 
   @override
-  Future<void> verifyConnection() async {
+  Future<void> verifyConnection({bool forceReprobe = false}) async {
     onVerify();
   }
 }

@@ -77,9 +77,23 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
                     Text(
                       host.status == MuxConnectionStatus.connected
                           ? '桌面 Antigravity 状态：${host.desktopOnline ? "在线可发送指令" : "未运行（仅历史只读）"}'
-                          : '桥接连接状态：未连接宿主机（请确认同一局域网或开启 Tailscale）',
+                          : '桥接连接状态：未连接宿主机（请确认局域网或开启 5G 公网隧道）',
                       style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
                     ),
+                    if ((host.pairing?.endpoints ?? const []).length > 1) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        '候选节点 (${host.pairing!.endpoints.length})：${host.pairing!.endpoints.join(" · ")}',
+                        style: const TextStyle(fontSize: 11.5, color: LevityColors.textMuted),
+                      ),
+                    ] else if ((host.pairing?.endpoints ?? const []).length == 1 &&
+                        isDirectEndpointUrl(host.pairing!.endpoints.first)) ...[
+                      const SizedBox(height: 6),
+                      const Text(
+                        '提示：当前配对仅含局域网地址；若需 5G 访问，请先在电脑端开启 Tailscale Funnel 后重新扫码。',
+                        style: TextStyle(fontSize: 11.5, color: LevityColors.orangeWarning),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,

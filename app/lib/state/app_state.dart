@@ -47,7 +47,7 @@ class HostConnectionState {
     if (!isPaired) return '点击扫码配对 Mac 主机';
     switch (status) {
       case MuxConnectionStatus.connected:
-        final mode = isDirect ? '已直连' : '已中继';
+        final mode = isDirect ? '已直连' : '公网5G';
         final ping = rttMs != null ? ' (${rttMs}ms)' : '';
         return '$hostName · $mode$ping';
       case MuxConnectionStatus.connecting:
@@ -101,6 +101,8 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
   String? _activeConversationId;
   bool _reprobingEndpoints = false;
   bool _verifyingConnection = false;
+  int _lastReprobeAtMs = 0;
+  String _networkKind = 'unknown';
   String? _lastAlwaysOnBanner;
 
   AgyHttpCarrier? get carrier => _carrier;
@@ -111,8 +113,26 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     ref.onDispose(_teardownTransport);
     NativeBridge.instance.init();
     NativeBridge.instance.onNotificationReply = _handleNotificationReply;
+    NativeBridge.instance.onNetworkChanged = _handleNetworkChanged;
     Future.microtask(_loadSavedPairing);
     return const HostConnectionState();
+  }
+
+  void _handleNetworkChanged(String kind) {
+    _networkKind = kind;
+    if (!state.isPaired) return;
+    if (kind == 'none') {
+      state = state.copyWith(
+        status: MuxConnectionStatus.reconnecting,
+        desktopOnline: false,
+        clearRtt: true,
+      );
+      _syncAlwaysOnNotification();
+      return;
+    }
+    // Network switched (e.g. Wi-Fi turned off -> 5G cellular, or Wi-Fi restored):
+    // immediately probe all endpoints and switch to the fastest reachable route.
+    unawaited(verifyConnection(forceReprobe: true));
   }
 
   void setActiveConversation(String? convId) {
@@ -128,7 +148,11 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     } catch (_) {}
   }
 
-  Future<void> connectWithPairing(PairingPayload payload, {bool persist = true}) async {
+  Future<void> connectWithPairing(
+    PairingPayload payload, {
+    bool persist = true,
+    EndpointProbeResult? preProbed,
+  }) async {
     _teardownTransport();
     state = state.copyWith(
       pairing: payload,
@@ -145,8 +169,8 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
       } catch (_) {}
     }
 
-    final probe = await AgyHttpCarrier.probeBestEndpoint(payload.endpoints);
-    final chosenUrl = probe?.endpoint ?? payload.endpoints.first;
+    final probe = preProbed ?? await AgyHttpCarrier.probeBestEndpoint(payload.endpoints);
+    final chosenUrl = probe?.endpoint ?? _fallbackEndpointForCurrentNetwork(payload.endpoints);
     final direct = probe?.isDirect ?? isDirectEndpointUrl(chosenUrl);
 
     _carrier = AgyHttpCarrier(baseUrl: chosenUrl, token: payload.token);
@@ -201,8 +225,17 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     }
   }
 
-  /// Actively verifies live connectivity (e.g. on app resume, pairing page open, or failed RPC).
-  Future<void> verifyConnection() async {
+  String _fallbackEndpointForCurrentNetwork(List<String> endpoints) {
+    if (_networkKind == 'cellular') {
+      for (final ep in endpoints) {
+        if (!isDirectEndpointUrl(ep)) return ep;
+      }
+    }
+    return endpoints.first;
+  }
+
+  /// Actively verifies live connectivity (e.g. on network switch, app resume, pairing page open, or failed RPC).
+  Future<void> verifyConnection({bool forceReprobe = false}) async {
     if (_verifyingConnection) return;
     final p = state.pairing;
     if (p == null || p.endpoints.isEmpty) return;
@@ -211,10 +244,12 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     try {
       final probe = await AgyHttpCarrier.probeBestEndpoint(
         p.endpoints,
-        timeout: const Duration(milliseconds: 1800),
+        timeout: const Duration(seconds: 8),
       );
       if (probe == null) {
-        final alive = _mux != null && await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1200));
+        final alive = !forceReprobe &&
+            _mux != null &&
+            await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1500));
         if (!alive && state.status == MuxConnectionStatus.connected) {
           state = state.copyWith(
             status: MuxConnectionStatus.reconnecting,
@@ -227,12 +262,12 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
       }
 
       if (probe.endpoint != state.activeEndpoint || _mux == null || _carrier == null) {
-        await connectWithPairing(p, persist: false);
+        await connectWithPairing(p, persist: false, preProbed: probe);
         return;
       }
 
       if (state.status == MuxConnectionStatus.connected) {
-        final alive = await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1500));
+        final alive = await _mux!.verifyAlive(timeout: const Duration(milliseconds: 2500));
         if (alive) {
           state = state.copyWith(
             rttMs: probe.rttMs,
@@ -242,7 +277,7 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
           unawaited(refreshAll());
         }
       } else {
-        await connectWithPairing(p, persist: false);
+        await connectWithPairing(p, persist: false, preProbed: probe);
       }
     } finally {
       _verifyingConnection = false;
@@ -253,11 +288,18 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     if (_reprobingEndpoints) return;
     final p = state.pairing;
     if (p == null || p.endpoints.length <= 1) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastReprobeAtMs < 4000) return;
+    _lastReprobeAtMs = now;
+
     _reprobingEndpoints = true;
     try {
-      final probe = await AgyHttpCarrier.probeBestEndpoint(p.endpoints);
+      final probe = await AgyHttpCarrier.probeBestEndpoint(
+        p.endpoints,
+        timeout: const Duration(seconds: 8),
+      );
       if (probe != null && probe.endpoint != state.activeEndpoint) {
-        await connectWithPairing(p, persist: false);
+        await connectWithPairing(p, persist: false, preProbed: probe);
       }
     } finally {
       _reprobingEndpoints = false;
