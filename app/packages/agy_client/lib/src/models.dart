@@ -126,16 +126,85 @@ class PoolQuota {
   }
 }
 
+class ModelOption {
+  const ModelOption({
+    required this.modelId,
+    required this.label,
+    required this.poolId,
+    this.tag = '',
+    this.isDefault = false,
+  });
+
+  final String modelId;
+  final String label;
+  final String poolId; // "gemini" | "claude_gpt"
+  final String tag; // "New" | "Leaving Soon" | "Notice" | ""
+  final bool isDefault;
+
+  static final RegExp _trailingParen = RegExp(r'^(.+?)\s*\(([^()]+)\)$');
+
+  String get familyName {
+    final m = _trailingParen.firstMatch(label.trim());
+    return m != null ? m.group(1)!.trim() : label.trim();
+  }
+
+  String get variantName {
+    final m = _trailingParen.firstMatch(label.trim());
+    return m != null ? m.group(2)!.trim() : '';
+  }
+
+  factory ModelOption.fromJson(Map<String, dynamic> json) {
+    final id = (json['modelId'] as String?) ?? '';
+    final lbl = (json['label'] as String?) ?? '';
+    return ModelOption(
+      modelId: id,
+      label: lbl.isNotEmpty ? lbl : id,
+      poolId: (json['poolId'] as String?) ?? 'gemini',
+      tag: (json['tag'] as String?) ?? '',
+      isDefault: (json['isDefault'] as bool?) ?? false,
+    );
+  }
+}
+
+class HostInfo {
+  const HostInfo({
+    required this.workspaces,
+    required this.models,
+    required this.desktopOnline,
+  });
+
+  final List<WorkspaceInfo> workspaces;
+  final List<ModelOption> models;
+  final bool desktopOnline;
+
+  factory HostInfo.fromJson(Map<String, dynamic> json) {
+    return HostInfo(
+      workspaces: ((json['workspaces'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(WorkspaceInfo.fromJson)
+          .toList(),
+      models: ((json['models'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ModelOption.fromJson)
+          .where((m) => m.modelId.isNotEmpty)
+          .toList(),
+      desktopOnline: (json['desktopOnline'] as bool?) ?? false,
+    );
+  }
+}
+
 class QuotaSnapshot {
   const QuotaSnapshot({
     required this.subscriptionTier,
     required this.updatedAt,
     required this.pools,
+    this.models = const [],
   });
 
   final String subscriptionTier;
   final int updatedAt;
   final List<PoolQuota> pools;
+  final List<ModelOption> models;
 
   factory QuotaSnapshot.fromJson(Map<String, dynamic> json) {
     return QuotaSnapshot(
@@ -144,6 +213,11 @@ class QuotaSnapshot {
       pools: ((json['pools'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(PoolQuota.fromJson)
+          .toList(),
+      models: ((json['models'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ModelOption.fromJson)
+          .where((m) => m.modelId.isNotEmpty)
           .toList(),
     );
   }

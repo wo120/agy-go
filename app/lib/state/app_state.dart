@@ -9,6 +9,9 @@ import 'native_bridge.dart';
 
 const _kPairingStorageKey = 'agy_mobile_pairing_v1';
 const _kQuotaCollapsedKey = 'agy_mobile_quota_collapsed';
+const _kSecureStorage = FlutterSecureStorage(
+  aOptions: AndroidOptions(resetOnError: true),
+);
 
 class HostConnectionState {
   const HostConnectionState({
@@ -21,6 +24,7 @@ class HostConnectionState {
     this.errorMessage,
     this.alwaysOnEnabled = true,
     this.workspaces = const [],
+    this.models = const [],
   });
 
   final PairingPayload? pairing;
@@ -32,6 +36,7 @@ class HostConnectionState {
   final String? errorMessage;
   final bool alwaysOnEnabled;
   final List<WorkspaceInfo> workspaces;
+  final List<ModelOption> models;
 
   bool get isPaired => pairing != null && pairing!.token.isNotEmpty;
   String get hostName => pairing?.hostName ?? '未连接主机';
@@ -64,6 +69,7 @@ class HostConnectionState {
     bool clearError = false,
     bool? alwaysOnEnabled,
     List<WorkspaceInfo>? workspaces,
+    List<ModelOption>? models,
   }) {
     return HostConnectionState(
       pairing: clearPairing ? null : (pairing ?? this.pairing),
@@ -75,12 +81,13 @@ class HostConnectionState {
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       alwaysOnEnabled: alwaysOnEnabled ?? this.alwaysOnEnabled,
       workspaces: workspaces ?? this.workspaces,
+      models: models ?? this.models,
     );
   }
 }
 
 class HostConnectionNotifier extends Notifier<HostConnectionState> {
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage = _kSecureStorage;
   AgyHttpCarrier? _carrier;
   AgyMuxClient? _mux;
   StreamSubscription? _statusSub;
@@ -122,7 +129,9 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
     );
 
     if (persist) {
-      await _storage.write(key: _kPairingStorageKey, value: jsonEncode(payload.toJson()));
+      try {
+        await _storage.write(key: _kPairingStorageKey, value: jsonEncode(payload.toJson()));
+      } catch (_) {}
     }
 
     final probe = await AgyHttpCarrier.probeBestEndpoint(payload.endpoints);
@@ -169,7 +178,9 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
 
   Future<void> disconnectAndClear() async {
     _teardownTransport();
-    await _storage.delete(key: _kPairingStorageKey);
+    try {
+      await _storage.delete(key: _kPairingStorageKey);
+    } catch (_) {}
     await NativeBridge.instance.stopAlwaysOnService();
     state = const HostConnectionState();
   }
@@ -193,12 +204,20 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
       final results = await Future.wait([
         c.getQuota(),
         c.listSessions(mode: ref.read(sessionsStateProvider).mode),
-        c.listWorkspaces(),
+        c.getHostInfo(),
         c.listAlerts(),
       ]);
-      ref.read(quotaStateProvider.notifier).applySnapshot(results[0] as QuotaSnapshot);
+      final quota = results[0] as QuotaSnapshot;
+      final hostInfo = results[2] as HostInfo;
+      final liveModels = hostInfo.models.isNotEmpty ? hostInfo.models : quota.models;
+      ref.read(quotaStateProvider.notifier).applySnapshot(quota);
       ref.read(sessionsStateProvider.notifier).applyListResult(results[1] as SessionListResult);
-      state = state.copyWith(workspaces: results[2] as List<WorkspaceInfo>, clearError: true);
+      state = state.copyWith(
+        workspaces: hostInfo.workspaces,
+        models: liveModels,
+        desktopOnline: hostInfo.desktopOnline,
+        clearError: true,
+      );
       ref.read(alertsStateProvider.notifier).setAlerts(results[3] as List<AgentAlert>);
     } catch (e) {
       state = state.copyWith(errorMessage: e.toString());
@@ -211,9 +230,11 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
         final d = msg.data as Map<String, dynamic>;
         state = state.copyWith(desktopOnline: (d['desktopOnline'] as bool?) ?? state.desktopOnline);
         if (d['quota'] is Map<String, dynamic>) {
-          ref.read(quotaStateProvider.notifier).applySnapshot(
-                QuotaSnapshot.fromJson(d['quota'] as Map<String, dynamic>),
-              );
+          final snap = QuotaSnapshot.fromJson(d['quota'] as Map<String, dynamic>);
+          ref.read(quotaStateProvider.notifier).applySnapshot(snap);
+          if (snap.models.isNotEmpty) {
+            state = state.copyWith(models: snap.models);
+          }
         }
         if (d['sessions'] is Map<String, dynamic>) {
           ref.read(sessionsStateProvider.notifier).applyListResult(
@@ -288,7 +309,7 @@ class QuotaUiState {
 }
 
 class QuotaStateNotifier extends Notifier<QuotaUiState> {
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage = _kSecureStorage;
 
   @override
   QuotaUiState build() {
@@ -297,10 +318,12 @@ class QuotaStateNotifier extends Notifier<QuotaUiState> {
   }
 
   Future<void> _loadCollapsed() async {
-    final v = await _storage.read(key: _kQuotaCollapsedKey);
-    if (v == '1') {
-      state = state.copyWith(collapsed: true);
-    }
+    try {
+      final v = await _storage.read(key: _kQuotaCollapsedKey);
+      if (v == '1') {
+        state = state.copyWith(collapsed: true);
+      }
+    } catch (_) {}
   }
 
   void applySnapshot(QuotaSnapshot snap) {
@@ -310,7 +333,9 @@ class QuotaStateNotifier extends Notifier<QuotaUiState> {
   Future<void> toggleCollapsed() async {
     final next = !state.collapsed;
     state = state.copyWith(collapsed: next);
-    await _storage.write(key: _kQuotaCollapsedKey, value: next ? '1' : '0');
+    try {
+      await _storage.write(key: _kQuotaCollapsedKey, value: next ? '1' : '0');
+    } catch (_) {}
   }
 
   Future<void> calibrate({

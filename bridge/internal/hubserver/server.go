@@ -474,8 +474,14 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 	case "host.info":
 		ws, _ := s.reader.ListWorkspaces()
 		tier := s.cfg.SubscriptionTier
-		if snap, err := s.quota.Snapshot(ctx); err == nil && snap != nil && snap.SubscriptionTier != "" {
-			tier = snap.SubscriptionTier
+		models := []quotamonitor.ModelOption{}
+		if snap, err := s.quota.Snapshot(ctx); err == nil && snap != nil {
+			if snap.SubscriptionTier != "" {
+				tier = snap.SubscriptionTier
+			}
+			if len(snap.Models) > 0 {
+				models = snap.Models
+			}
 		}
 		return okResp(map[string]any{
 			"hostName":         s.cfg.HostName,
@@ -483,6 +489,7 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			"desktopOnline":    s.runner.IsDesktopOnline(),
 			"subscriptionTier": tier,
 			"workspaces":       ws,
+			"models":           models,
 		})
 
 	case "quota.get":

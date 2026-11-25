@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/antigravity-mobile/bridge/internal/procutil"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
 )
 
@@ -43,7 +43,7 @@ func NewLanguageServerProvider(daemonDir string, store *statestore.Store) *Langu
 			Transport: &http.Transport{Proxy: nil}, // Always bypass system proxy for local loopback.
 		},
 		cacheTTL:  15 * time.Second,
-		pidAlive:  isPIDAlive,
+		pidAlive:  procutil.IsPIDAlive,
 		envLookup: os.Getenv,
 	}
 }
@@ -60,9 +60,18 @@ type getUserStatusResp struct {
 			} `json:"planInfo"`
 		} `json:"planStatus"`
 		CascadeModelConfigData struct {
+			DefaultOverrideModelConfig struct {
+				ModelOrAlias struct {
+					Model string `json:"model"`
+				} `json:"modelOrAlias"`
+			} `json:"defaultOverrideModelConfig"`
 			ClientModelConfigs []struct {
-				Label     string `json:"label"`
-				ModelID   string `json:"modelId"`
+				Label        string `json:"label"`
+				ModelID      string `json:"modelId"`
+				TagTitle     string `json:"tagTitle"`
+				ModelOrAlias struct {
+					Model string `json:"model"`
+				} `json:"modelOrAlias"`
 				QuotaInfo *struct {
 					RemainingFraction float64 `json:"remainingFraction"`
 					ResetTime         string  `json:"resetTime"`
@@ -149,11 +158,33 @@ func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, now time.
 		"claude_gpt": {minFrac: 2.0},
 	}
 
+	defaultModelRef := strings.TrimSpace(raw.UserStatus.CascadeModelConfigData.DefaultOverrideModelConfig.ModelOrAlias.Model)
+	seenModels := make(map[string]struct{})
+	models := make([]ModelOption, 0, len(raw.UserStatus.CascadeModelConfigData.ClientModelConfigs))
+
 	for _, mc := range raw.UserStatus.CascadeModelConfigData.ClientModelConfigs {
+		poolID := classifyConfigPool(mc.ModelID, mc.Label)
+		modelID := strings.TrimSpace(mc.ModelID)
+		if modelID != "" {
+			if _, dup := seenModels[modelID]; !dup {
+				seenModels[modelID] = struct{}{}
+				label := strings.TrimSpace(mc.Label)
+				if label == "" {
+					label = modelID
+				}
+				models = append(models, ModelOption{
+					ModelID:   modelID,
+					Label:     label,
+					PoolID:    poolID,
+					Tag:       strings.TrimSpace(mc.TagTitle),
+					IsDefault: defaultModelRef != "" && strings.TrimSpace(mc.ModelOrAlias.Model) == defaultModelRef,
+				})
+			}
+		}
+
 		if mc.QuotaInfo == nil {
 			continue
 		}
-		poolID := classifyConfigPool(mc.ModelID, mc.Label)
 		b := buckets[poolID]
 		frac := clampFloat(mc.QuotaInfo.RemainingFraction, 0, 1)
 		var resetPtr *int64
@@ -239,6 +270,7 @@ func (p *LanguageServerProvider) buildSnapshot(raw *getUserStatusResp, now time.
 		SubscriptionTier: tier,
 		UpdatedAt:        nowUnix,
 		Pools:            pools,
+		Models:           models,
 	}
 }
 
@@ -337,12 +369,4 @@ func (p *LanguageServerProvider) discoverEndpoint() (string, string, error) {
 		return "", "", errors.New("antigravity language server not running")
 	}
 	return bestAddr, bestCSRF, nil
-}
-
-func isPIDAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }

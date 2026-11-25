@@ -8,6 +8,7 @@ import '../alerts/alerts_screen.dart';
 import '../chat/chat_screen.dart';
 import '../pairing/pairing_screen.dart';
 import '../search/search_screen.dart';
+import 'new_session_sheet.dart';
 import 'quota_card.dart';
 
 class HomeScreen extends ConsumerWidget {
@@ -380,115 +381,44 @@ class HomeScreen extends ConsumerWidget {
   }
 
   Future<void> _showNewSessionSheet(BuildContext context, WidgetRef ref) async {
-    final host = ref.read(hostConnectionProvider);
     final carrier = ref.read(hostConnectionProvider.notifier).carrier;
     if (carrier == null) {
       Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PairingScreen()));
       return;
     }
-
-    final promptCtrl = TextEditingController();
-    final titleCtrl = TextEditingController();
-    String? selectedWorkspacePath;
-    String selectedModel = 'pro';
+    if (ref.read(hostConnectionProvider).models.isEmpty) {
+      ref.read(hostConnectionProvider.notifier).refreshAll();
+    }
 
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF17192C),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('发起新的 Antigravity 对话', style: Theme.of(ctx).textTheme.titleMedium),
-                  const SizedBox(height: 14),
-                  DropdownButtonFormField<String?>(
-                    initialValue: selectedWorkspacePath,
-                    dropdownColor: const Color(0xFF1F2238),
-                    decoration: const InputDecoration(
-                      labelText: '目标工作区',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: [
-                      const DropdownMenuItem<String?>(value: null, child: Text('🌐 通用对话（无代码库）')),
-                      for (final ws in host.workspaces)
-                        DropdownMenuItem<String?>(value: ws.rootPath, child: Text('📁 ${ws.label}')),
-                    ],
-                    onChanged: (v) => setModalState(() => selectedWorkspacePath = v),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: selectedModel,
-                    dropdownColor: const Color(0xFF1F2238),
-                    decoration: const InputDecoration(
-                      labelText: '模型档位',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: 'pro', child: Text('Pro（复杂任务推荐）')),
-                      DropdownMenuItem(value: 'flash', child: Text('Flash（快速响应）')),
-                      DropdownMenuItem(value: 'flash_lite', child: Text('Flash Lite（轻量）')),
-                    ],
-                    onChanged: (v) => setModalState(() => selectedModel = v ?? 'pro'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: titleCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '标题（可选）',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: promptCtrl,
-                    minLines: 2,
-                    maxLines: 5,
-                    decoration: const InputDecoration(
-                      labelText: '输入指令或需求',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: () async {
-                        final text = promptCtrl.text.trim();
-                        if (text.isEmpty) return;
-                        Navigator.of(ctx).pop();
-                        try {
-                          final newId = await carrier.createSession(
-                            prompt: text,
-                            title: titleCtrl.text.trim(),
-                            model: selectedModel,
-                            workspacePath: selectedWorkspacePath,
-                          );
-                          await ref.read(hostConnectionProvider.notifier).refreshAll();
-                          if (newId != null && newId.isNotEmpty && context.mounted) {
-                            _openChat(context, newId);
-                          }
-                        } catch (e) {
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('新建失败：$e')),
-                            );
-                          }
-                        }
-                      },
-                      child: const Text('发送到 Mac 执行'),
-                    ),
-                  ),
-                ],
-              ),
+      backgroundColor: Colors.transparent,
+      barrierColor: const Color(0xA605060E),
+      builder: (_) {
+        return Consumer(
+          builder: (_, modalRef, __) {
+            final host = modalRef.watch(hostConnectionProvider);
+            return NewSessionSheet(
+              workspaces: host.workspaces,
+              models: host.models,
+              onSubmit: ({
+                required String prompt,
+                required String title,
+                required String model,
+                String? workspacePath,
+              }) async {
+                final newId = await carrier.createSession(
+                  prompt: prompt,
+                  title: title,
+                  model: model,
+                  workspacePath: workspacePath,
+                );
+                await ref.read(hostConnectionProvider.notifier).refreshAll();
+                if (newId != null && newId.isNotEmpty && context.mounted) {
+                  _openChat(context, newId);
+                }
+              },
             );
           },
         );

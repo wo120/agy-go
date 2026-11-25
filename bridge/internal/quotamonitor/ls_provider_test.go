@@ -18,15 +18,20 @@ func TestLanguageServerProviderParsesRealTierAndQuotas(t *testing.T) {
 			"userStatus": {
 				"userTier": {"id": "g1-pro-tier", "name": "Google AI Pro"},
 				"cascadeModelConfigData": {
+					"defaultOverrideModelConfig": {"modelOrAlias": {"model": "MODEL_PLACEHOLDER_M532"}},
 					"clientModelConfigs": [
 						{
 							"label": "Gemini 4 Neon (High)",
 							"modelId": "gemini-4-neon-high",
+							"tagTitle": "New",
+							"modelOrAlias": {"model": "MODEL_PLACEHOLDER_M532"},
 							"quotaInfo": {"remainingFraction": 0.3902266, "resetTime": "2026-11-24T17:56:18Z"}
 						},
 						{
 							"label": "Claude Opus 5.5 (High)",
 							"modelId": "claude-opus-5-5-high",
+							"tagTitle": "New",
+							"modelOrAlias": {"model": "MODEL_PLACEHOLDER_M402"},
 							"quotaInfo": {"remainingFraction": 1, "resetTime": "2026-11-24T19:40:21Z"}
 						}
 					]
@@ -69,5 +74,14 @@ func TestLanguageServerProviderParsesRealTierAndQuotas(t *testing.T) {
 	claude := snap.Pools[1]
 	if claude.PoolID != "claude_gpt" || claude.Remaining5hPct != 100 || claude.Reset5hAt != nil || claude.Level != "full" {
 		t.Fatalf("unexpected claude pool: %+v", claude)
+	}
+	if len(snap.Models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(snap.Models))
+	}
+	if snap.Models[0].ModelID != "gemini-4-neon-high" || !snap.Models[0].IsDefault || snap.Models[0].Tag != "New" || snap.Models[0].PoolID != "gemini" {
+		t.Fatalf("unexpected first model: %+v", snap.Models[0])
+	}
+	if snap.Models[1].ModelID != "claude-opus-5-5-high" || snap.Models[1].IsDefault || snap.Models[1].PoolID != "claude_gpt" {
+		t.Fatalf("unexpected second model: %+v", snap.Models[1])
 	}
 }

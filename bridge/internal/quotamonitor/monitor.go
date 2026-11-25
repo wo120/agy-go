@@ -13,11 +13,21 @@ const (
 	Window7dSeconds int64 = 7 * 24 * 3600
 )
 
+// ModelOption represents a concrete model exposed by the local Antigravity LanguageServer.
+type ModelOption struct {
+	ModelID   string `json:"modelId"`
+	Label     string `json:"label"`
+	PoolID    string `json:"poolId"`              // "gemini" | "claude_gpt"
+	Tag       string `json:"tag,omitempty"`       // e.g. "New" | "Leaving Soon" | "Notice"
+	IsDefault bool   `json:"isDefault,omitempty"` // matches desktop defaultOverrideModelConfig
+}
+
 // QuotaSnapshot is returned to mobile clients for the collapsible quota dashboard.
 type QuotaSnapshot struct {
-	SubscriptionTier string      `json:"subscriptionTier"`
-	UpdatedAt        int64       `json:"updatedAt"`
-	Pools            []PoolQuota `json:"pools"`
+	SubscriptionTier string        `json:"subscriptionTier"`
+	UpdatedAt        int64         `json:"updatedAt"`
+	Pools            []PoolQuota   `json:"pools"`
+	Models           []ModelOption `json:"models,omitempty"`
 }
 
 // PoolQuota represents 5h and 7d rolling quota state for a model family.

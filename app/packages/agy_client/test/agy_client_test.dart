@@ -118,6 +118,38 @@ void main() {
       expect(dec.questions.first.options, ['(Recommended) 全部提交', '仅提交 README']);
       expect(dec.questions.first.multiSelect, isFalse);
     });
+    test('ModelOption parses familyName, variantName, and HostInfo models', () {
+      final host = HostInfo.fromJson({
+        'desktopOnline': true,
+        'workspaces': [
+          {'kind': 'workspace', 'label': 'antigravity-mobile', 'rootPath': '/tmp/app'},
+        ],
+        'models': [
+          {
+            'modelId': 'gemini-4-neon-high',
+            'label': 'Gemini 4 Neon (High)',
+            'poolId': 'gemini',
+            'tag': 'New',
+            'isDefault': true,
+          },
+          {
+            'modelId': 'claude-opus-5-5-medium',
+            'label': 'Claude Opus 5.5 (Medium)',
+            'poolId': 'claude_gpt',
+          },
+        ],
+      });
+
+      expect(host.desktopOnline, isTrue);
+      expect(host.workspaces.length, 1);
+      expect(host.models.length, 2);
+      expect(host.models.first.familyName, 'Gemini 4 Neon');
+      expect(host.models.first.variantName, 'High');
+      expect(host.models.first.isDefault, isTrue);
+      expect(host.models.last.familyName, 'Claude Opus 5.5');
+      expect(host.models.last.variantName, 'Medium');
+      expect(host.models.last.poolId, 'claude_gpt');
+    });
   });
 
   group('MuxSeqTracker & Direct IP classification', () {

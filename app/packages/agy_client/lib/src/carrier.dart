@@ -273,12 +273,14 @@ class AgyHttpCarrier {
         .toList();
   }
 
-  Future<List<WorkspaceInfo>> listWorkspaces() async {
+  Future<HostInfo> getHostInfo() async {
     final data = await callRpc('host.info') as Map<String, dynamic>;
-    return ((data['workspaces'] as List?) ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map(WorkspaceInfo.fromJson)
-        .toList();
+    return HostInfo.fromJson(data);
+  }
+
+  Future<List<WorkspaceInfo>> listWorkspaces() async {
+    final info = await getHostInfo();
+    return info.workspaces;
   }
 
   Future<TextContentPage> fetchFileContent(String conversationId, String path, {int offset = 0, int limit = 524288}) async {

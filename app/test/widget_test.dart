@@ -3,6 +3,7 @@ import 'package:agy_mobile/state/app_state.dart';
 import 'package:agy_mobile/theme/levity_theme.dart';
 import 'package:agy_mobile/ui/chat/chat_screen.dart';
 import 'package:agy_mobile/ui/home/home_screen.dart';
+import 'package:agy_mobile/ui/home/new_session_sheet.dart';
 import 'package:agy_mobile/ui/home/quota_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -372,5 +373,90 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('消息 23'), findsOneWidget);
     expect(find.byIcon(Icons.keyboard_double_arrow_down_rounded), findsNothing);
+  });
+
+  testWidgets('NewSessionSheet uses live desktop models, switches effort pills, and falls back offline', (tester) async {
+    String? submittedModel;
+    String? submittedPrompt;
+
+    const liveModels = [
+      ModelOption(modelId: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', poolId: 'gemini', tag: 'New', isDefault: true),
+      ModelOption(modelId: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)', poolId: 'gemini', tag: 'New'),
+      ModelOption(modelId: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)', poolId: 'gemini', tag: 'New'),
+      ModelOption(modelId: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)', poolId: 'claude_gpt', tag: 'New'),
+      ModelOption(modelId: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)', poolId: 'claude_gpt', tag: 'New'),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLevityTheme(),
+        home: Scaffold(
+          body: NewSessionSheet(
+            workspaces: const [
+              WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile', rootPath: '/repo/app'),
+            ],
+            models: liveModels,
+            onSubmit: ({
+              required String prompt,
+              required String title,
+              required String model,
+              String? workspacePath,
+            }) async {
+              submittedPrompt = prompt;
+              submittedModel = model;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Defaults to desktop default modelId
+    expect(find.text('gemini-4-neon-high'), findsOneWidget);
+    expect(find.text('Low'), findsOneWidget);
+    expect(find.text('High'), findsOneWidget);
+    expect(find.text('XHigh'), findsOneWidget);
+
+    // Tap XHigh effort pill
+    await tester.tap(find.text('XHigh'));
+    await tester.pumpAndSettle();
+    expect(find.text('gemini-4-neon-xhigh'), findsOneWidget);
+
+    // Optional title field is collapsed by default and expands on tap
+    expect(find.byKey(const Key('new_session_title_field')), findsNothing);
+    await tester.tap(find.text('自定义标题'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('new_session_title_field')), findsOneWidget);
+
+    // Enter prompt and submit
+    await tester.enterText(find.byKey(const Key('new_session_prompt_field')), '测试实机模型选择');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('发送到 Mac 执行'));
+    await tester.pumpAndSettle();
+
+    expect(submittedPrompt, '测试实机模型选择');
+    expect(submittedModel, 'gemini-4-neon-xhigh');
+
+    // Offline fallback when models list is empty
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildLevityTheme(),
+        home: Scaffold(
+          body: NewSessionSheet(
+            workspaces: const [],
+            models: const [],
+            onSubmit: ({
+              required String prompt,
+              required String title,
+              required String model,
+              String? workspacePath,
+            }) async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('pro'), findsOneWidget);
+    expect(find.textContaining('已回退为基础档位'), findsOneWidget);
   });
 }
