@@ -60,12 +60,14 @@ bool isDirectEndpointUrl(String rawUrl) {
 
 HttpClient _createRawHttpClient({
   required bool directBypassProxy,
-  Duration connectionTimeout = const Duration(seconds: 6),
-  Duration idleTimeout = const Duration(seconds: 10),
+  Duration? connectionTimeout,
+  Duration? idleTimeout,
 }) {
   final client = HttpClient()
-    ..connectionTimeout = connectionTimeout
-    ..idleTimeout = idleTimeout;
+    ..connectionTimeout = connectionTimeout ??
+        (directBypassProxy ? const Duration(seconds: 6) : const Duration(seconds: 10))
+    ..idleTimeout = idleTimeout ??
+        (directBypassProxy ? const Duration(seconds: 15) : const Duration(seconds: 90));
   if (directBypassProxy) {
     client.findProxy = (_) => 'DIRECT';
   }

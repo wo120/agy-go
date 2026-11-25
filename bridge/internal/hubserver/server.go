@@ -161,7 +161,10 @@ func New(
 		runner:       runner,
 		notifier:     notif,
 		generation:   fmt.Sprintf("gen_%d", time.Now().UnixNano()),
-		upgrader:     websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }},
+		upgrader: websocket.Upgrader{
+			CheckOrigin:       func(*http.Request) bool { return true },
+			EnableCompression: true,
+		},
 		clients:      make(map[*wsClient]struct{}),
 		idemCache:    make(map[string]RPCResponse),
 		runningSince: make(map[string]int64),

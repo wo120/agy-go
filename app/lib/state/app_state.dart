@@ -663,15 +663,33 @@ class ChatSessionState {
   }
 }
 
+// In-memory LRU cache of recently viewed sessions so revisiting a conversation paints in 0ms
+// while the live WS snapshot refreshes in the background.
+final Map<String, ChatSessionState> _recentChatCache = <String, ChatSessionState>{};
+const int _kMaxRecentChatCache = 12;
+
+void _saveChatCache(String conversationId, ChatSessionState snapshot) {
+  if (snapshot.steps.isEmpty) return;
+  _recentChatCache.remove(conversationId);
+  _recentChatCache[conversationId] = snapshot.copyWith(loading: false, sending: false, clearError: true);
+  while (_recentChatCache.length > _kMaxRecentChatCache) {
+    _recentChatCache.remove(_recentChatCache.keys.first);
+  }
+}
+
 class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, String> {
   StreamSubscription? _muxSub;
   AgyMuxClient? _boundMux;
+  Timer? _httpFallbackTimer;
+  bool _snapshotReceived = false;
   bool _disposed = false;
 
   @override
   ChatSessionState build(String conversationId) {
     _disposed = false;
+    _snapshotReceived = false;
     final hostNotifier = ref.read(hostConnectionProvider.notifier);
+    final hostState = ref.read(hostConnectionProvider);
     hostNotifier.setActiveConversation(conversationId);
 
     _bindMux(hostNotifier.mux, conversationId);
@@ -679,24 +697,49 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
     ref.listen<HostConnectionState>(hostConnectionProvider, (prev, next) {
       if (_disposed) return;
       if (prev?.transportEpoch != next.transportEpoch) {
+        _snapshotReceived = false;
         _bindMux(ref.read(hostConnectionProvider.notifier).mux, conversationId);
-        unawaited(loadInitial(conversationId));
+        _scheduleInitialFetch(conversationId, muxConnected: next.status == MuxConnectionStatus.connected);
       } else if (prev?.status != MuxConnectionStatus.connected &&
           next.status == MuxConnectionStatus.connected &&
           (state.loading || state.error != null || state.steps.isEmpty)) {
-        unawaited(loadInitial(conversationId));
+        _scheduleInitialFetch(conversationId, muxConnected: true);
       }
     });
 
     ref.onDispose(() {
       _disposed = true;
+      _httpFallbackTimer?.cancel();
+      _httpFallbackTimer = null;
       _unbindMux(conversationId);
       hostNotifier.setActiveConversation(null);
     });
 
+    final cachedView = _recentChatCache[conversationId];
     final cachedCard = _findCachedCard(conversationId);
-    Future.microtask(() => loadInitial(conversationId));
+    _scheduleInitialFetch(
+      conversationId,
+      muxConnected: hostState.status == MuxConnectionStatus.connected && hostNotifier.mux != null,
+    );
+    if (cachedView != null) {
+      return cachedView.copyWith(session: cachedCard ?? cachedView.session, loading: false, clearError: true);
+    }
     return ChatSessionState(session: cachedCard);
+  }
+
+  void _scheduleInitialFetch(String conversationId, {required bool muxConnected}) {
+    _httpFallbackTimer?.cancel();
+    _httpFallbackTimer = null;
+    if (muxConnected && _boundMux != null) {
+      // Reuse the already-handshaked WS connection (avoids a 3s cold TLS handshake on 5G);
+      // fall back to HTTP RPC only if WS snapshot does not arrive promptly.
+      _httpFallbackTimer = Timer(const Duration(milliseconds: 2200), () {
+        if (_disposed || _snapshotReceived) return;
+        unawaited(loadInitial(conversationId));
+      });
+      return;
+    }
+    Future.microtask(() => loadInitial(conversationId));
   }
 
   SessionCard? _findCachedCard(String conversationId) {
@@ -752,7 +795,7 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
       final res = await c.getSession(conversationId);
       if (_disposed) return;
       final rows = TranscriptReducer.reduce(res.steps);
-      state = state.copyWith(
+      final nextState = state.copyWith(
         session: res.session,
         steps: res.steps,
         rows: rows,
@@ -761,6 +804,10 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         loading: false,
         clearError: true,
       );
+      _snapshotReceived = true;
+      _httpFallbackTimer?.cancel();
+      state = nextState;
+      _saveChatCache(conversationId, nextState);
       if (res.steps.isNotEmpty) {
         unawaited(c.markRead(conversationId, res.steps.last.stepIndex));
       }
@@ -807,14 +854,23 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         final session = d['session'] is Map<String, dynamic>
             ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
             : state.session;
-        state = state.copyWith(
+        final nextState = state.copyWith(
           session: session,
           steps: steps,
           rows: TranscriptReducer.reduce(steps),
           artifacts: artifacts,
+          hasMore: (d['hasMore'] as bool?) ?? state.hasMore,
           loading: false,
           clearError: true,
         );
+        _snapshotReceived = true;
+        _httpFallbackTimer?.cancel();
+        state = nextState;
+        _saveChatCache(arg, nextState);
+        final c = ref.read(hostConnectionProvider.notifier).carrier;
+        if (c != null && steps.isNotEmpty) {
+          unawaited(c.markRead(arg, steps.last.stepIndex));
+        }
       } else if (msg.type == 'event' && msg.event == 'step.upsert' && msg.data is Map<String, dynamic>) {
         final d = msg.data as Map<String, dynamic>;
         final incoming = ((d['steps'] as List?) ?? const [])
@@ -828,10 +884,12 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
           merged[s.stepIndex] = s;
         }
         final sorted = merged.values.toList()..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
-        state = state.copyWith(
+        final nextState = state.copyWith(
           steps: sorted,
           rows: TranscriptReducer.reduce(sorted),
         );
+        state = nextState;
+        _saveChatCache(arg, nextState);
         final c = ref.read(hostConnectionProvider.notifier).carrier;
         if (c != null && sorted.isNotEmpty) {
           unawaited(c.markRead(arg, sorted.last.stepIndex));
