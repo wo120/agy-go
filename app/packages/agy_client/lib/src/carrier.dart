@@ -383,12 +383,16 @@ class AgyMuxClient {
   AgyMuxClient({
     required this.baseUrl,
     required this.token,
-    this.pingInterval = const Duration(seconds: 8),
-    this.pongTimeout = const Duration(seconds: 14),
+    Duration? pingInterval,
+    Duration? pongTimeout,
     Duration? connectTimeout,
     this.onReconnectNeeded,
-  }) : connectTimeout = connectTimeout ??
-            (isDirectEndpointUrl(baseUrl) ? const Duration(seconds: 4) : const Duration(seconds: 10));
+  })  : pingInterval = pingInterval ??
+            (isDirectEndpointUrl(baseUrl) ? const Duration(seconds: 8) : const Duration(seconds: 10)),
+        pongTimeout = pongTimeout ??
+            (isDirectEndpointUrl(baseUrl) ? const Duration(seconds: 14) : const Duration(seconds: 28)),
+        connectTimeout = connectTimeout ??
+            (isDirectEndpointUrl(baseUrl) ? const Duration(seconds: 4) : const Duration(seconds: 16));
 
   final String baseUrl;
   final String token;

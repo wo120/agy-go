@@ -100,7 +100,7 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
   StreamSubscription? _msgSub;
   String? _activeConversationId;
   bool _reprobingEndpoints = false;
-  bool _verifyingConnection = false;
+  Future<void>? _verifyFuture;
   int _lastReprobeAtMs = 0;
   String _networkKind = 'unknown';
   String? _lastAlwaysOnBanner;
@@ -235,52 +235,59 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
   }
 
   /// Actively verifies live connectivity (e.g. on network switch, app resume, pairing page open, or failed RPC).
-  Future<void> verifyConnection({bool forceReprobe = false}) async {
-    if (_verifyingConnection) return;
+  Future<void> verifyConnection({bool forceReprobe = false}) {
+    final existing = _verifyFuture;
+    if (existing != null) return existing;
+    final f = _runVerifyConnection(forceReprobe: forceReprobe);
+    _verifyFuture = f;
+    f.whenComplete(() {
+      if (identical(_verifyFuture, f)) {
+        _verifyFuture = null;
+      }
+    });
+    return f;
+  }
+
+  Future<void> _runVerifyConnection({required bool forceReprobe}) async {
     final p = state.pairing;
     if (p == null || p.endpoints.isEmpty) return;
 
-    _verifyingConnection = true;
-    try {
-      final probe = await AgyHttpCarrier.probeBestEndpoint(
-        p.endpoints,
-        timeout: const Duration(seconds: 8),
-      );
-      if (probe == null) {
-        final alive = !forceReprobe &&
-            _mux != null &&
-            await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1500));
-        if (!alive && state.status == MuxConnectionStatus.connected) {
-          state = state.copyWith(
-            status: MuxConnectionStatus.reconnecting,
-            desktopOnline: false,
-            clearRtt: true,
-          );
-          _syncAlwaysOnNotification();
-        }
-        return;
+    final probe = await AgyHttpCarrier.probeBestEndpoint(
+      p.endpoints,
+      timeout: const Duration(seconds: 8),
+    );
+    if (probe == null) {
+      final alive = !forceReprobe &&
+          _mux != null &&
+          await _mux!.verifyAlive(timeout: const Duration(milliseconds: 1500));
+      if (!alive && state.status == MuxConnectionStatus.connected) {
+        state = state.copyWith(
+          status: MuxConnectionStatus.reconnecting,
+          desktopOnline: false,
+          clearRtt: true,
+        );
+        _syncAlwaysOnNotification();
       }
+      return;
+    }
 
-      if (probe.endpoint != state.activeEndpoint || _mux == null || _carrier == null) {
-        await connectWithPairing(p, persist: false, preProbed: probe);
-        return;
-      }
+    if (probe.endpoint != state.activeEndpoint || _mux == null || _carrier == null) {
+      await connectWithPairing(p, persist: false, preProbed: probe);
+      return;
+    }
 
-      if (state.status == MuxConnectionStatus.connected) {
-        final alive = await _mux!.verifyAlive(timeout: const Duration(milliseconds: 2500));
-        if (alive) {
-          state = state.copyWith(
-            rttMs: probe.rttMs,
-            desktopOnline: probe.desktopOnline,
-            isDirect: probe.isDirect,
-          );
-          unawaited(refreshAll());
-        }
-      } else {
-        await connectWithPairing(p, persist: false, preProbed: probe);
+    if (state.status == MuxConnectionStatus.connected) {
+      final alive = await _mux!.verifyAlive(timeout: const Duration(milliseconds: 2500));
+      if (alive) {
+        state = state.copyWith(
+          rttMs: probe.rttMs,
+          desktopOnline: probe.desktopOnline,
+          isDirect: probe.isDirect,
+        );
+        unawaited(refreshAll());
       }
-    } finally {
-      _verifyingConnection = false;
+    } else {
+      await connectWithPairing(p, persist: false, preProbed: probe);
     }
   }
 

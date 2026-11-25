@@ -522,7 +522,8 @@ func (m *Manager) startListenersLoop(ctx context.Context, tsSrv *tsnet.Server, l
 	defer ticker.Stop()
 
 	for {
-		if m.tryStartFunnel(ctx, tsSrv, lc, tailnetURL, accountLogin) {
+		if funnelURL, ok := m.tryStartFunnel(ctx, tsSrv, lc, tailnetURL, accountLogin); ok {
+			go m.keepAliveFunnel(ctx, tsSrv, funnelURL)
 			return
 		}
 		select {
@@ -534,9 +535,79 @@ func (m *Manager) startListenersLoop(ctx context.Context, tsSrv *tsnet.Server, l
 	}
 }
 
-func (m *Manager) tryStartFunnel(ctx context.Context, tsSrv *tsnet.Server, lc *local.Client, tailnetURL, accountLogin string) bool {
+// keepAliveFunnel periodically probes the public Funnel /api/v1/health endpoint.
+// This both keeps desktop proxy/DERP tunnels warm and auto-restarts tsnet if Funnel goes silently stale.
+func (m *Manager) keepAliveFunnel(ctx context.Context, tsSrv *tsnet.Server, funnelURL string) {
+	if funnelURL == "" {
+		return
+	}
+	probeClient := &http.Client{Timeout: 12 * time.Second}
+	healthURL := strings.TrimRight(funnelURL, "/") + "/api/v1/health"
+	consecutiveFails := 0
+
+	ticker := time.NewTicker(75 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.mu.RLock()
+			stillMine := m.tsSrv == tsSrv && !m.closed
+			m.mu.RUnlock()
+			if !stillMine {
+				return
+			}
+
+			// Refresh OS proxy env in case user toggled/changed desktop proxy node.
+			ensureSystemProxyForTsnet()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+			if err != nil {
+				continue
+			}
+			resp, err := probeClient.Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					consecutiveFails = 0
+					continue
+				}
+				err = fmt.Errorf("unexpected HTTP %d", resp.StatusCode)
+			}
+
+			consecutiveFails++
+			log.Printf("[agy-remote] Tailscale Funnel keepalive probe failed (%d/2): %v", consecutiveFails, err)
+			if consecutiveFails >= 2 {
+				log.Printf("[agy-remote] Tailscale Funnel appears stale; auto-restarting embedded tsnet node...")
+				go m.restartSelfHeal(tsSrv)
+				return
+			}
+		}
+	}
+}
+
+func (m *Manager) restartSelfHeal(staleSrv *tsnet.Server) {
+	m.mu.RLock()
+	shouldRestart := m.tsSrv == staleSrv && !m.closed && m.status.Enabled
+	m.mu.RUnlock()
+	if !shouldRestart {
+		return
+	}
+	m.stopRuntime(Status{
+		Enabled:  true,
+		State:    StateStarting,
+		Hostname: m.hostname,
+		Message:  "检测到 5G 隧道假死，正在自动重连自愈...",
+	})
+	time.Sleep(1500 * time.Millisecond)
+	_ = m.Enable()
+}
+
+func (m *Manager) tryStartFunnel(ctx context.Context, tsSrv *tsnet.Server, lc *local.Client, tailnetURL, accountLogin string) (string, bool) {
 	if ctx.Err() != nil {
-		return true
+		return "", true
 	}
 	ln, err := tsSrv.ListenFunnel("tcp", ":443")
 	if err != nil {
@@ -551,7 +622,7 @@ func (m *Manager) tryStartFunnel(ctx context.Context, tsSrv *tsnet.Server, lc *l
 			m.status.Message = fmt.Sprintf("已登录账号，但 Tailscale 后台尚未开启 HTTPS/Funnel（%v）", err)
 		}
 		m.mu.Unlock()
-		return false
+		return "", false
 	}
 
 	domain := ""
@@ -573,7 +644,7 @@ func (m *Manager) tryStartFunnel(ctx context.Context, tsSrv *tsnet.Server, lc *l
 	if m.tsSrv != tsSrv {
 		m.mu.Unlock()
 		_ = ln.Close()
-		return true
+		return "", true
 	}
 	m.funnelLn = ln
 	m.funnelSrv = srv
@@ -594,7 +665,7 @@ func (m *Manager) tryStartFunnel(ctx context.Context, tsSrv *tsnet.Server, lc *l
 			log.Printf("[agy-remote] Tailscale Funnel server stopped: %v", err)
 		}
 	}()
-	return true
+	return funnelURL, true
 }
 
 func (m *Manager) setError(tsSrv *tsnet.Server, msg string) {
