@@ -429,6 +429,44 @@ func enrichStep(step *TranscriptStep) {
 	if step.Model != "" {
 		step.ModelDisplay = FormatModelDisplay(step.Model)
 	}
+	normalizeToolCallArgs(step.ToolCalls)
+}
+
+// normalizeToolCallArgs decodes JSON-stringified structured fields emitted by Antigravity's
+// compact transcript.jsonl (where tool_calls[].args values are serialized as strings).
+func normalizeToolCallArgs(toolCalls []ToolCall) {
+	for i := range toolCalls {
+		args := toolCalls[i].Args
+		if len(args) == 0 {
+			continue
+		}
+		switch toolCalls[i].Name {
+		case "ask_question":
+			if raw, ok := args["questions"].(string); ok {
+				var parsed []any
+				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+					for _, item := range parsed {
+						if qm, ok := item.(map[string]any); ok {
+							if optStr, ok := qm["options"].(string); ok {
+								var opts []any
+								if err := json.Unmarshal([]byte(optStr), &opts); err == nil {
+									qm["options"] = opts
+								}
+							}
+						}
+					}
+					args["questions"] = parsed
+				}
+			}
+		case "write_file", "edit_file":
+			if raw, ok := args["ArtifactMetadata"].(string); ok {
+				var parsed map[string]any
+				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+					args["ArtifactMetadata"] = parsed
+				}
+			}
+		}
+	}
 }
 
 func applyStepToStats(st *ConversationStats, step TranscriptStep) {

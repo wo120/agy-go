@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'models.dart';
 
 class LocalFileLink {
@@ -173,16 +175,16 @@ class TranscriptReducer {
 
         for (final tc in step.toolCalls) {
           if (tc.name == 'ask_question') {
-            final qs = (tc.args['questions'] as List?) ?? const [];
+            final qs = _decodeJsonList(tc.args['questions']);
             for (final q in qs.whereType<Map<String, dynamic>>()) {
-              final qText = (q['question'] as String?) ?? '';
-              final opts = ((q['options'] as List?) ?? const []).map((e) => e.toString()).toList();
+              final qText = q['question'] is String ? q['question'] as String : '';
+              final opts = _decodeJsonList(q['options']).map((e) => e.toString()).toList();
               if (qText.isNotEmpty && opts.isNotEmpty) {
                 decisionQuestions.add(
                   DecisionQuestion(
                     question: qText,
                     options: opts,
-                    multiSelect: (q['is_multi_select'] as bool?) ?? false,
+                    multiSelect: q['is_multi_select'] == true || q['is_multi_select'] == 'true',
                   ),
                 );
               }
@@ -232,5 +234,21 @@ class TranscriptReducer {
 
     flushProcess();
     return rows;
+  }
+
+  static List<dynamic> _decodeJsonList(dynamic raw) {
+    if (raw is List) return raw;
+    if (raw is String) {
+      final trimmed = raw.trim();
+      if (trimmed.startsWith('[')) {
+        try {
+          final decoded = jsonDecode(trimmed);
+          if (decoded is List) return decoded;
+        } catch (_) {
+          // Malformed or truncated JSON string: ignore safely rather than crashing chat view.
+        }
+      }
+    }
+    return const [];
   }
 }

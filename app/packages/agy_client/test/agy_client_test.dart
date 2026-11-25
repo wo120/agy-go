@@ -76,6 +76,48 @@ void main() {
       final dec = rows[3] as DecisionPromptRow;
       expect(dec.questions.first.options.length, 2);
     });
+
+    test('parses JSON-stringified ask_question.questions without throwing type cast error', () {
+      const steps = [
+        TranscriptStep(
+          stepIndex: 61,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          createdAtUnix: 1005,
+          toolCalls: [
+            ToolCallItem(
+              name: 'ask_question',
+              args: {
+                'questions':
+                    '[{"is_multi_select":false,"options":["(Recommended) 全部提交","仅提交 README"],"question":"请问希望如何提交？"}]',
+              },
+            ),
+          ],
+        ),
+        TranscriptStep(
+          stepIndex: 62,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          createdAtUnix: 1006,
+          toolCalls: [
+            ToolCallItem(
+              name: 'ask_question',
+              args: {'questions': '[truncated invalid json'},
+            ),
+          ],
+        ),
+      ];
+
+      final rows = TranscriptReducer.reduce(steps);
+      expect(rows.length, 1);
+      final dec = rows.first as DecisionPromptRow;
+      expect(dec.questions.length, 1);
+      expect(dec.questions.first.question, '请问希望如何提交？');
+      expect(dec.questions.first.options, ['(Recommended) 全部提交', '仅提交 README']);
+      expect(dec.questions.first.multiSelect, isFalse);
+    });
   });
 
   group('MuxSeqTracker & Direct IP classification', () {

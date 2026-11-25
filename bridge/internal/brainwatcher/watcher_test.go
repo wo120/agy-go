@@ -87,3 +87,59 @@ func TestIncrementalScanHydrationAndModelFormat(t *testing.T) {
 		t.Fatalf("expected NeedsConfirm=true and appendedCount=1, got %+v count=%d", stats2, appendedCount)
 	}
 }
+
+func TestCompactTranscriptStringifiedToolCallArgs(t *testing.T) {
+	tmp := t.TempDir()
+	st, err := statestore.Open(filepath.Join(tmp, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	brainDir := filepath.Join(tmp, "brain")
+	logsDir := filepath.Join(brainDir, "conv-compact", ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Antigravity compact transcript.jsonl serializes tool_calls[].args values as JSON strings
+	// without setting truncated_fields when below the truncation threshold.
+	line1 := `{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-24T13:00:00Z","tool_calls":[{"name":"write_file","args":{"ArtifactMetadata":"{\"RequestFeedback\":true,\"Summary\":\"plan\",\"UserFacing\":true}"}}]}` + "\n"
+	line2 := `{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-24T13:01:00Z","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"is_multi_select\":false,\"options\":[\"(Recommended) 方案 A\",\"方案 B\"],\"question\":\"如何提交改动？\"}]"}}]}` + "\n"
+
+	compactPath := filepath.Join(logsDir, "transcript.jsonl")
+	if err := os.WriteFile(compactPath, []byte(line1+line2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(brainDir, st, EventCallbacks{})
+	if err := w.ScanAll(); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, ok := w.GetStats("conv-compact")
+	if !ok || !stats.NeedsConfirm {
+		t.Fatalf("expected NeedsConfirm=true, got ok=%v stats=%+v", ok, stats)
+	}
+	if stats.ConfirmSnippet != "如何提交改动？" {
+		t.Fatalf("expected decoded question snippet, got %q", stats.ConfirmSnippet)
+	}
+	if len(stats.QuickReplies) != 2 || stats.QuickReplies[0] != "方案 A" || stats.QuickReplies[1] != "方案 B" {
+		t.Fatalf("unexpected quick replies: %#v", stats.QuickReplies)
+	}
+
+	steps, _, err := w.ReadSteps("conv-compact", 0, 50)
+	if err != nil || len(steps) != 2 {
+		t.Fatalf("ReadSteps failed: len=%d err=%v", len(steps), err)
+	}
+
+	meta, ok := steps[0].ToolCalls[0].Args["ArtifactMetadata"].(map[string]any)
+	if !ok || meta["RequestFeedback"] != true {
+		t.Fatalf("expected ArtifactMetadata normalized to map, got %#v", steps[0].ToolCalls[0].Args["ArtifactMetadata"])
+	}
+
+	qs, ok := steps[1].ToolCalls[0].Args["questions"].([]any)
+	if !ok || len(qs) != 1 {
+		t.Fatalf("expected questions normalized to []any, got %T (%#v)", steps[1].ToolCalls[0].Args["questions"], steps[1].ToolCalls[0].Args["questions"])
+	}
+}
