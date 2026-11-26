@@ -4,7 +4,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/app_state.dart';
-import '../../theme/levity_theme.dart';
+import '../../theme/agy_theme.dart';
 import '../artifacts/artifact_viewer.dart';
 import '../pairing/pairing_screen.dart';
 
@@ -48,7 +48,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (!mounted || !_scrollCtrl.hasClients) return;
     _scrollCtrl.animateTo(
       0,
-      duration: const Duration(milliseconds: 260),
+      duration: const Duration(milliseconds: 240),
       curve: Curves.easeOutCubic,
     );
   }
@@ -103,27 +103,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ].join(' · '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11.5, color: LevityColors.textMuted),
+                style: const TextStyle(fontSize: 11.5, color: AgyColors.textMuted),
               ),
           ],
+        ),
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: AgyColors.borderHairline),
         ),
         actions: [
           if (chat.artifacts.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: TextButton.icon(
-                onPressed: () => showArtifactsDrawer(
+              padding: const EdgeInsets.only(right: 12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => showArtifactsDrawer(
                   context,
                   conversationId: widget.conversationId,
                   artifacts: chat.artifacts,
                 ),
-                icon: const Icon(Icons.description_outlined, size: 17, color: LevityColors.purpleSubagent),
-                label: Text('${chat.artifacts.length} 产物', style: const TextStyle(color: LevityColors.textPrimary)),
+                child: AgyTag(
+                  icon: Icons.description_outlined,
+                  label: '${chat.artifacts.length} 产物',
+                  color: AgyColors.accentBright,
+                  backgroundColor: AgyColors.accentTint,
+                  borderColor: AgyColors.borderAccent,
+                ),
               ),
             ),
         ],
       ),
-      body: LevityBackground(
+      body: AgyCanvas(
         child: Stack(
           children: [
             Column(
@@ -131,7 +141,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 if (chat.error != null && chat.rows.isNotEmpty)
                   Container(
                     width: double.infinity,
-                    color: const Color(0x33F59E0B),
+                    decoration: const BoxDecoration(
+                      color: AgyColors.warningTint,
+                      border: Border(bottom: BorderSide(color: Color(0x44F59E0B))),
+                    ),
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     child: Row(
                       children: [
@@ -140,12 +153,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             chat.error!,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12.5, color: LevityColors.orangeWarning),
+                            style: const TextStyle(fontSize: 12.5, color: AgyColors.warning),
                           ),
                         ),
                         TextButton(
                           onPressed: () => ref.read(chatSessionProvider(widget.conversationId).notifier).reload(),
-                          child: const Text('重试', style: TextStyle(fontSize: 12.5, color: LevityColors.orangeWarning)),
+                          child: const Text('重试', style: TextStyle(fontSize: 12.5, color: AgyColors.warning)),
                         ),
                       ],
                     ),
@@ -156,9 +169,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              CircularProgressIndicator(),
+                              CircularProgressIndicator(color: AgyColors.accentBright, strokeWidth: 2.2),
                               SizedBox(height: 12),
-                              Text('正在同步会话记录...', style: TextStyle(fontSize: 12.5, color: LevityColors.textMuted)),
+                              Text('正在同步会话记录...', style: TextStyle(fontSize: 12.5, color: AgyColors.textMuted)),
                             ],
                           ),
                         )
@@ -167,22 +180,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ? Center(
                                   child: Padding(
                                     padding: const EdgeInsets.all(24),
-                                    child: GlassCard(
+                                    child: ConsolePanel(
                                       padding: const EdgeInsets.all(20),
+                                      accentStripeColor: AgyColors.warning,
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Icon(Icons.wifi_off_rounded, size: 34, color: LevityColors.orangeWarning),
+                                          const Icon(Icons.wifi_off_rounded, size: 32, color: AgyColors.warning),
                                           const SizedBox(height: 10),
                                           const Text(
                                             '会话内容加载失败',
-                                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: LevityColors.textPrimary),
+                                            style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w700,
+                                              color: AgyColors.textPrimary,
+                                            ),
                                           ),
                                           const SizedBox(height: 6),
                                           Text(
                                             chat.error!,
                                             textAlign: TextAlign.center,
-                                            style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
+                                            style: const TextStyle(fontSize: 12.5, color: AgyColors.textSecondary),
                                           ),
                                           const SizedBox(height: 14),
                                           Wrap(
@@ -190,7 +208,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                             runSpacing: 8,
                                             alignment: WrapAlignment.center,
                                             children: [
-                                              FilledButton.tonal(
+                                              FilledButton(
                                                 onPressed: () => ref
                                                     .read(chatSessionProvider(widget.conversationId).notifier)
                                                     .reload(),
@@ -210,7 +228,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   ),
                                 )
                               : const Center(
-                                  child: Text('暂无聊天步骤记录', style: TextStyle(color: LevityColors.textMuted)),
+                                  child: Text('暂无聊天步骤记录', style: TextStyle(color: AgyColors.textMuted)),
                                 ))
                           : ListView.builder(
                               controller: _scrollCtrl,
@@ -231,12 +249,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ],
             ),
 
-            // One-hand thumb floating bubble (scroll to bottom or one-tap confirm)
+            // One-hand floating action dock (scroll to bottom or one-tap confirm)
             if (_showScrollToBottom || needsConfirm)
               Positioned(
                 right: 16,
                 bottom: 84,
-                child: _OneHandFloatingBubble(
+                child: _OneHandFloatingDock(
                   needsConfirm: needsConfirm,
                   showScrollDown: _showScrollToBottom,
                   onQuickConfirm: () => _send('确认方案，直接开工'),
@@ -251,107 +269,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _buildRow(ChatRow row) {
     return switch (row) {
-      UserMessageRow() => Align(
-          alignment: Alignment.centerRight,
-          child: Container(
-            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF4F46E5), Color(0xFF6D28D9)],
-              ),
-              borderRadius: BorderRadius.circular(18),
-            ),
-            child: SelectableText(
-              row.content,
-              style: const TextStyle(fontSize: 14.2, height: 1.45, color: Colors.white),
-            ),
-          ),
-        ),
+      UserMessageRow() => _UserMessageBubble(row: row),
       ProcessGroupRow() => _ProcessAccordionRow(row: row),
-      AssistantMessageRow() => GlassCard(
-          padding: const EdgeInsets.all(14),
-          borderRadius: 18,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (row.modelDisplay.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(
-                    row.modelDisplay,
-                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: LevityColors.purpleSubagent),
-                  ),
-                ),
-              MarkdownBody(
-                data: row.content,
-                selectable: true,
-                onTapLink: (text, href, _) {
-                  if (href != null && href.startsWith('file://')) {
-                    _openLocalFile(href, text);
-                  }
-                },
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                  p: const TextStyle(fontSize: 14.2, height: 1.52, color: LevityColors.textPrimary),
-                  a: const TextStyle(color: LevityColors.blueUnread, decoration: TextDecoration.underline),
-                  code: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 12.5,
-                    color: Color(0xFFC4B5FD),
-                    backgroundColor: Color(0x332D2F4A),
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: const Color(0xCC0E101D),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: LevityColors.cardBorder),
-                  ),
-                ),
-              ),
-              if (row.fileLinks.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    for (final link in row.fileLinks)
-                      ActionChip(
-                        avatar: const Icon(Icons.article_outlined, size: 15, color: LevityColors.blueUnread),
-                        label: Text(link.label, style: const TextStyle(fontSize: 12)),
-                        backgroundColor: const Color(0x3360A5FA),
-                        side: BorderSide.none,
-                        onPressed: () => _openLocalFile('file://${link.path}', link.label),
-                      ),
-                  ],
-                ),
-              ],
-            ],
-          ),
+      AssistantMessageRow() => _AssistantMessageCard(
+          row: row,
+          onOpenLocalFile: _openLocalFile,
         ),
-      DecisionPromptRow() => GlassCard(
+      DecisionPromptRow() => ConsolePanel(
           padding: const EdgeInsets.all(14),
-          borderRadius: 18,
+          borderRadius: 12,
+          accentStripeColor: AgyColors.warning,
+          borderColor: AgyColors.warning.withValues(alpha: 0.4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Row(
                 children: [
-                  Icon(Icons.bolt_rounded, size: 16, color: LevityColors.orangeWarning),
+                  Icon(Icons.bolt_rounded, size: 16, color: AgyColors.warning),
                   SizedBox(width: 6),
-                  Text('Agent 等待你拍板确认', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: LevityColors.orangeWarning)),
+                  Text(
+                    'Agent 等待你拍板确认',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AgyColors.warning),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
               for (final q in row.questions) ...[
-                Text(q.question, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: LevityColors.textPrimary)),
+                Text(
+                  q.question,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AgyColors.textPrimary),
+                ),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
                   children: [
                     for (final opt in q.options)
-                      FilledButton.tonal(
+                      OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: AgyColors.bgSubtle,
+                          side: const BorderSide(color: AgyColors.borderAccent),
+                          foregroundColor: AgyColors.accentBright,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
                         onPressed: () => _send(opt.replaceFirst('(Recommended) ', '')),
-                        child: Text(opt, style: const TextStyle(fontSize: 12.5)),
+                        child: Text(opt, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
                       ),
                   ],
                 ),
@@ -369,8 +331,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
         decoration: const BoxDecoration(
-          color: Color(0xDD101222),
-          border: Border(top: BorderSide(color: LevityColors.cardBorder)),
+          color: AgyColors.bgDock,
+          border: Border(top: BorderSide(color: AgyColors.borderHairline)),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -380,32 +342,370 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 controller: _inputCtrl,
                 minLines: 1,
                 maxLines: 4,
-                style: const TextStyle(fontSize: 14.5, color: LevityColors.textPrimary),
+                style: const TextStyle(fontSize: 14.5, color: AgyColors.textPrimary),
                 decoration: InputDecoration(
                   hintText: desktopOnline ? '回复 Agent 指令或确认决策...' : '桌面端未启动（只读浏览模式）',
-                  hintStyle: const TextStyle(color: LevityColors.textMuted),
+                  hintStyle: const TextStyle(color: AgyColors.textMuted, fontSize: 13.5),
                   filled: true,
-                  fillColor: const Color(0xFF1A1D32),
+                  fillColor: AgyColors.bgSubtle,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    borderSide: BorderSide.none,
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AgyColors.borderHairline),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AgyColors.accent, width: 1.2),
                   ),
                 ),
               ),
             ),
             const SizedBox(width: 8),
-            IconButton.filled(
-              onPressed: sending ? null : () => _send(_inputCtrl.text),
-              style: IconButton.styleFrom(backgroundColor: LevityColors.purpleSubagent),
-              icon: sending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.arrow_upward_rounded, color: Colors.white),
+            SizedBox(
+              width: 42,
+              height: 42,
+              child: FilledButton(
+                onPressed: sending ? null : () => _send(_inputCtrl.text),
+                style: FilledButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  backgroundColor: AgyColors.accent,
+                  foregroundColor: AgyColors.textOnAccent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: AgyColors.textOnAccent),
+                      )
+                    : const Icon(Icons.arrow_upward_rounded, size: 20),
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AssistantMessageCard extends StatefulWidget {
+  const _AssistantMessageCard({
+    required this.row,
+    required this.onOpenLocalFile,
+  });
+
+  final AssistantMessageRow row;
+  final void Function(String rawHref, String fallbackLabel) onOpenLocalFile;
+
+  @override
+  State<_AssistantMessageCard> createState() => _AssistantMessageCardState();
+}
+
+class _AssistantMessageCardState extends State<_AssistantMessageCard> {
+  bool _showSpeedDetail = false;
+
+  String _speedBadgeText() {
+    if (widget.row.streamTps > 0) {
+      return '${widget.row.streamTps.toStringAsFixed(0)} tok/s';
+    }
+    return 'E2E ${widget.row.e2eTps.toStringAsFixed(0)}';
+  }
+
+  String _speedDetailLine() {
+    final parts = <String>[];
+    if (widget.row.streamTps > 0) {
+      parts.add('流式 ${widget.row.streamTps.toStringAsFixed(1)} tok/s');
+    }
+    if (widget.row.e2eTps > 0) {
+      parts.add('E2E ${widget.row.e2eTps.toStringAsFixed(1)} tok/s');
+    }
+    if (widget.row.ttftMs > 0) {
+      final ttft = widget.row.ttftMs < 1000
+          ? '${widget.row.ttftMs}ms'
+          : '${(widget.row.ttftMs / 1000.0).toStringAsFixed(1)}s';
+      parts.add('TTFT $ttft');
+    }
+    if (widget.row.outputTokens > 0) {
+      parts.add('${widget.row.outputTokens} tok');
+    }
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final row = widget.row;
+    final hasHeader = row.modelDisplay.isNotEmpty || row.hasSpeedTelemetry || row.createdAtUnix > 0;
+
+    return ConsolePanel(
+      padding: const EdgeInsets.all(14),
+      borderRadius: 12,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasHeader)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  if (row.modelDisplay.isNotEmpty)
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: AgyColors.accentBright,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              row.modelDisplay,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                fontFamily: 'monospace',
+                                color: AgyColors.accentBright,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    const Spacer(),
+                  if (row.hasSpeedTelemetry) ...[
+                    const SizedBox(width: 6),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => setState(() => _showSpeedDetail = !_showSpeedDetail),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AgyColors.onlineTint,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: AgyColors.online.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.bolt_rounded, size: 11.5, color: AgyColors.online),
+                            const SizedBox(width: 2),
+                            Text(
+                              _speedBadgeText(),
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                fontFamily: 'monospace',
+                                fontFeatures: kTabularFigures,
+                                color: AgyColors.online,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (row.createdAtUnix > 0) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      formatMessageTime(row.createdAtUnix),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        fontFeatures: kTabularFigures,
+                        color: AgyColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          if (_showSpeedDetail && row.hasSpeedTelemetry)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AgyColors.bgSubtle,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: AgyColors.borderHairline),
+                ),
+                child: Text(
+                  _speedDetailLine(),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    fontFeatures: kTabularFigures,
+                    color: AgyColors.textSecondary,
+                  ),
+                ),
+              ),
+            ),
+          MarkdownBody(
+            data: row.content,
+            selectable: true,
+            onTapLink: (text, href, _) {
+              if (href != null && href.startsWith('file://')) {
+                widget.onOpenLocalFile(href, text);
+              }
+            },
+            styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+              p: const TextStyle(fontSize: 14.2, height: 1.54, color: AgyColors.textPrimary),
+              a: const TextStyle(color: AgyColors.info, decoration: TextDecoration.underline),
+              code: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12.5,
+                color: AgyColors.accentBright,
+                backgroundColor: AgyColors.bgSubtle,
+              ),
+              codeblockDecoration: BoxDecoration(
+                color: AgyColors.bgCodeBlock,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AgyColors.borderHairline),
+              ),
+              blockquoteDecoration: const BoxDecoration(
+                color: AgyColors.bgSubtle,
+                border: Border(left: BorderSide(color: AgyColors.accent, width: 3)),
+              ),
+            ),
+          ),
+          if (row.fileLinks.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final link in row.fileLinks)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(6),
+                    onTap: () => widget.onOpenLocalFile('file://${link.path}', link.label),
+                    child: AgyTag(
+                      icon: Icons.article_outlined,
+                      label: link.label,
+                      color: AgyColors.info,
+                      backgroundColor: AgyColors.infoTint,
+                      borderColor: AgyColors.info.withValues(alpha: 0.3),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UserMessageBubble extends StatefulWidget {
+  const _UserMessageBubble({required this.row});
+
+  final UserMessageRow row;
+
+  @override
+  State<_UserMessageBubble> createState() => _UserMessageBubbleState();
+}
+
+class _UserMessageBubbleState extends State<_UserMessageBubble> {
+  bool _showMetadata = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final timeLabel = formatMessageTime(widget.row.createdAtUnix);
+    final hasMeta = widget.row.metadata.isNotEmpty;
+
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.84),
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+        decoration: BoxDecoration(
+          color: AgyColors.accentBubbleFill,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(14),
+            topRight: Radius.circular(14),
+            bottomLeft: Radius.circular(14),
+            bottomRight: Radius.circular(4),
+          ),
+          border: Border.all(color: AgyColors.accentBubbleBorder, width: 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              widget.row.content,
+              style: const TextStyle(fontSize: 14.2, height: 1.48, color: AgyColors.textPrimary),
+            ),
+            if (timeLabel.isNotEmpty || hasMeta) ...[
+              const SizedBox(height: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (timeLabel.isNotEmpty)
+                    Text(
+                      timeLabel,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                        fontFeatures: kTabularFigures,
+                        color: AgyColors.accentBright,
+                      ),
+                    ),
+                  if (hasMeta) ...[
+                    if (timeLabel.isNotEmpty) const SizedBox(width: 8),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: () => setState(() => _showMetadata = !_showMetadata),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _showMetadata ? Icons.expand_less_rounded : Icons.info_outline_rounded,
+                              size: 13.5,
+                              color: AgyColors.textSecondary,
+                            ),
+                            const SizedBox(width: 2),
+                            Text(
+                              _showMetadata ? '收起元信息' : '元信息',
+                              style: const TextStyle(fontSize: 10.5, color: AgyColors.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+            if (_showMetadata && hasMeta) ...[
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AgyColors.bgCodeBlock,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AgyColors.borderHairline),
+                ),
+                child: SelectableText(
+                  widget.row.metadata,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    height: 1.4,
+                    color: AgyColors.textSecondary,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -429,33 +729,37 @@ class _ProcessAccordionRowState extends State<_ProcessAccordionRow> {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0x661C1F33),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: LevityColors.cardBorder),
+        color: AgyColors.bgSubtle,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AgyColors.borderHairline),
       ),
       child: Column(
         children: [
           InkWell(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(10),
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
               child: Row(
                 children: [
-                  const Icon(Icons.psychology_alt_outlined, size: 16, color: LevityColors.textMuted),
+                  const Icon(Icons.terminal_rounded, size: 15, color: AgyColors.textMuted),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       widget.row.summaryLine,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12.5, color: LevityColors.textSecondary),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        color: AgyColors.textSecondary,
+                      ),
                     ),
                   ),
                   Icon(
                     _expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
                     size: 18,
-                    color: LevityColors.textMuted,
+                    color: AgyColors.textMuted,
                   ),
                 ],
               ),
@@ -467,22 +771,32 @@ class _ProcessAccordionRowState extends State<_ProcessAccordionRow> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Divider(height: 12, color: LevityColors.cardBorder),
+                  const Divider(height: 12, color: AgyColors.borderHairline),
                   for (final item in widget.row.items) ...[
                     if (item.toolNames.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 4),
                         child: Text(
-                          '🔧 ${item.toolNames.join(" → ")}',
-                          style: const TextStyle(fontSize: 12, color: LevityColors.purpleSubagent),
+                          '>_ ${item.toolNames.join(" -> ")}',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontFamily: 'monospace',
+                            color: AgyColors.accentBright,
+                          ),
                         ),
                       ),
                     if (item.thinking.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(
-                          item.thinking,
-                          style: const TextStyle(fontSize: 12, height: 1.45, color: LevityColors.textMuted),
+                        child: Container(
+                          padding: const EdgeInsets.only(left: 8),
+                          decoration: const BoxDecoration(
+                            border: Border(left: BorderSide(color: AgyColors.borderStrong, width: 2)),
+                          ),
+                          child: Text(
+                            item.thinking,
+                            style: const TextStyle(fontSize: 12, height: 1.45, color: AgyColors.textMuted),
+                          ),
                         ),
                       ),
                   ],
@@ -495,8 +809,8 @@ class _ProcessAccordionRowState extends State<_ProcessAccordionRow> {
   }
 }
 
-class _OneHandFloatingBubble extends StatelessWidget {
-  const _OneHandFloatingBubble({
+class _OneHandFloatingDock extends StatelessWidget {
+  const _OneHandFloatingDock({
     required this.needsConfirm,
     required this.showScrollDown,
     required this.onQuickConfirm,
@@ -510,33 +824,52 @@ class _OneHandFloatingBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassCapsule(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: AgyColors.bgDock,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AgyColors.borderStrong, width: 1),
+        boxShadow: const [
+          BoxShadow(color: Color(0x66000000), blurRadius: 12, offset: Offset(0, 4)),
+        ],
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (needsConfirm)
             InkWell(
+              borderRadius: BorderRadius.circular(8),
               onTap: onQuickConfirm,
               child: const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.check_circle_rounded, size: 17, color: LevityColors.greenDirect),
+                    Icon(Icons.check_circle_rounded, size: 17, color: AgyColors.online),
                     SizedBox(width: 5),
-                    Text('一键确认开工', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: LevityColors.textPrimary)),
+                    Text(
+                      '一键确认开工',
+                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AgyColors.textPrimary),
+                    ),
                   ],
                 ),
               ),
             ),
-          if (needsConfirm && showScrollDown) const SizedBox(width: 6),
+          if (needsConfirm && showScrollDown)
+            Container(
+              width: 1,
+              height: 16,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: AgyColors.borderHairline,
+            ),
           if (showScrollDown)
             InkWell(
+              borderRadius: BorderRadius.circular(8),
               onTap: onScrollBottom,
               child: const Padding(
                 padding: EdgeInsets.all(4),
-                child: Icon(Icons.keyboard_double_arrow_down_rounded, size: 19, color: LevityColors.textPrimary),
+                child: Icon(Icons.keyboard_double_arrow_down_rounded, size: 19, color: AgyColors.accentBright),
               ),
             ),
         ],

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +29,7 @@ type DaemonHubMeta struct {
 	HTTPSPort int    `json:"httpsPort"`
 	HTTPPort  int    `json:"httpPort"`
 	LSVersion string `json:"lsVersion"`
+	CSRFToken string `json:"csrfToken"`
 }
 
 // NewConversationOptions configures official `agentapi new-conversation`.
@@ -64,27 +67,32 @@ func (osExecutor) Run(ctx context.Context, bin string, args []string, env []stri
 	return out.Bytes(), err
 }
 
-// Runner invokes Antigravity's official bin/agentapi CLI against an active local daemon.
+// Runner invokes Antigravity's official bin/agentapi CLI and local LanguageServerService.
 type Runner struct {
 	agentAPIBin string
 	daemonDir   string
 	exec        CommandExecutor
+	httpClient  *http.Client
 	pidAliveFn  func(int) bool
 }
 
-// New creates a Runner for Antigravity's official agentapi binary.
+// New creates a Runner for Antigravity's official agentapi binary and local LS RPC client.
 func New(agentAPIBin, daemonDir string) *Runner {
 	return &Runner{
 		agentAPIBin: agentAPIBin,
 		daemonDir:   daemonDir,
 		exec:        osExecutor{},
-		pidAliveFn:  procutil.IsPIDAlive,
+		httpClient: &http.Client{
+			Timeout:   25 * time.Second,
+			Transport: &http.Transport{Proxy: nil},
+		},
+		pidAliveFn: procutil.IsPIDAlive,
 	}
 }
 
 // IsDesktopOnline reports whether a live Antigravity local language_server hub exists.
 func (r *Runner) IsDesktopOnline() bool {
-	_, err := r.discoverActiveAddress()
+	_, _, err := r.discoverEndpoint()
 	return err == nil
 }
 
@@ -112,7 +120,7 @@ func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOption
 	if prompt == "" {
 		return nil, errors.New("prompt is required")
 	}
-	addr, err := r.discoverActiveAddress()
+	addr, csrf, err := r.discoverEndpoint()
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +145,11 @@ func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOption
 	runCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	out, err := r.exec.Run(runCtx, bin, execArgs, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, opts.WorkspacePath)
+	env := []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}
+	if csrf != "" {
+		env = append(env, "ANTIGRAVITY_CSRF_TOKEN="+csrf)
+	}
+	out, err := r.exec.Run(runCtx, bin, execArgs, env, opts.WorkspacePath)
 	raw := strings.TrimSpace(string(out))
 	if err != nil {
 		return nil, fmt.Errorf("agentapi new-conversation failed: %s (%w)", raw, err)
@@ -150,24 +162,42 @@ func (r *Runner) NewConversation(ctx context.Context, opts NewConversationOption
 			res.ConversationID = cid
 		} else if cid, ok := parsed["conversationId"].(string); ok {
 			res.ConversationID = cid
+		} else if respMap, ok := parsed["response"].(map[string]any); ok {
+			if nc, ok := respMap["newConversation"].(map[string]any); ok {
+				if cid, ok := nc["conversationId"].(string); ok {
+					res.ConversationID = cid
+				}
+			}
 		}
 	}
 	return res, nil
 }
 
-// SendMessage delivers a user reply/decision to an existing conversation via `agentapi send-message`.
+// SendMessage delivers a user reply/decision to an existing conversation via LanguageServerService/SendUserCascadeMessage.
+// Using SendUserCascadeMessage (instead of `agentapi send-message`, which emits a <SYSTEM_MESSAGE>) records a true USER_INPUT turn.
 func (r *Runner) SendMessage(ctx context.Context, conversationID, content string) (*CommandResult, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	content = strings.TrimSpace(content)
 	if conversationID == "" || content == "" {
 		return nil, errors.New("conversationId and content are required")
 	}
-	addr, err := r.discoverActiveAddress()
+	addr, csrf, err := r.discoverEndpoint()
 	if err != nil {
 		return nil, err
 	}
 
-	bin, execArgs, err := r.resolveAgentAPICmd([]string{"send-message", conversationID, content})
+	baseURL := addr
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "http://" + baseURL
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage"
+
+	payload, err := json.Marshal(map[string]any{
+		"cascadeId": conversationID,
+		"items": []map[string]string{
+			{"text": content},
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -175,24 +205,47 @@ func (r *Runner) SendMessage(ctx context.Context, conversationID, content string
 	runCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	out, err := r.exec.Run(runCtx, bin, execArgs, []string{"ANTIGRAVITY_LS_ADDRESS=" + addr}, "")
-	raw := strings.TrimSpace(string(out))
+	req, err := http.NewRequestWithContext(runCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, fmt.Errorf("agentapi send-message failed: %s (%w)", raw, err)
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if csrf != "" {
+		req.Header.Set("x-codeium-csrf-token", csrf)
+	}
+
+	client := r.httpClient
+	if client == nil {
+		client = &http.Client{
+			Timeout:   25 * time.Second,
+			Transport: &http.Transport{Proxy: nil},
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("SendUserCascadeMessage request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	raw := strings.TrimSpace(string(body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("SendUserCascadeMessage HTTP %d: %s", resp.StatusCode, raw)
 	}
 	return &CommandResult{ConversationID: conversationID, RawOutput: raw}, nil
 }
 
-func (r *Runner) discoverActiveAddress() (string, error) {
+func (r *Runner) discoverEndpoint() (string, string, error) {
 	if envAddr := strings.TrimSpace(os.Getenv("ANTIGRAVITY_LS_ADDRESS")); envAddr != "" {
-		return envAddr, nil
+		return envAddr, strings.TrimSpace(os.Getenv("ANTIGRAVITY_CSRF_TOKEN")), nil
 	}
 	matches, err := filepath.Glob(filepath.Join(r.daemonDir, "hub_*.json"))
 	if err != nil || len(matches) == 0 {
-		return "", ErrDesktopOffline
+		return "", "", ErrDesktopOffline
 	}
 
-	var bestAddr string
+	var bestAddr, bestCSRF string
 	var bestMtime int64
 	for _, p := range matches {
 		fi, err := os.Stat(p)
@@ -220,10 +273,11 @@ func (r *Runner) discoverActiveAddress() (string, error) {
 		if fi.ModTime().UnixNano() >= bestMtime {
 			bestMtime = fi.ModTime().UnixNano()
 			bestAddr = fmt.Sprintf("127.0.0.1:%d", port)
+			bestCSRF = meta.CSRFToken
 		}
 	}
 	if bestAddr == "" {
-		return "", ErrDesktopOffline
+		return "", "", ErrDesktopOffline
 	}
-	return bestAddr, nil
+	return bestAddr, bestCSRF, nil
 }

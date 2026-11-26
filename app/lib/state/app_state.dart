@@ -355,11 +355,16 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
         c.listSessions(mode: ref.read(sessionsStateProvider).mode),
         c.getHostInfo(),
         c.listAlerts(),
+        c.getTps().then<TpsSnapshot?>((v) => v).catchError((_) => null),
       ]);
       final quota = results[0] as QuotaSnapshot;
       final hostInfo = results[2] as HostInfo;
+      final tps = results[4] as TpsSnapshot?;
       final liveModels = hostInfo.models.isNotEmpty ? hostInfo.models : quota.models;
       ref.read(quotaStateProvider.notifier).applySnapshot(quota);
+      if (tps != null) {
+        ref.read(tpsStateProvider.notifier).applySnapshot(tps);
+      }
       ref.read(sessionsStateProvider.notifier).applyListResult(results[1] as SessionListResult);
       state = state.copyWith(
         workspaces: hostInfo.workspaces,
@@ -386,6 +391,11 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
             state = state.copyWith(models: snap.models);
           }
         }
+        if (d['tps'] is Map<String, dynamic>) {
+          ref.read(tpsStateProvider.notifier).applySnapshot(
+                TpsSnapshot.fromJson(d['tps'] as Map<String, dynamic>),
+              );
+        }
         if (d['sessions'] is Map<String, dynamic>) {
           ref.read(sessionsStateProvider.notifier).applyListResult(
                 SessionListResult.fromJson(d['sessions'] as Map<String, dynamic>),
@@ -398,6 +408,10 @@ class HostConnectionNotifier extends Notifier<HostConnectionState> {
           if (snap.models.isNotEmpty) {
             state = state.copyWith(models: snap.models);
           }
+        } else if (msg.event == 'tps.updated' && msg.data is Map<String, dynamic>) {
+          ref.read(tpsStateProvider.notifier).applySnapshot(
+                TpsSnapshot.fromJson(msg.data as Map<String, dynamic>),
+              );
         } else if (msg.event == 'session.summary' && msg.data is Map<String, dynamic>) {
           ref.read(sessionsStateProvider.notifier).upsertCard(
                 SessionCard.fromJson(msg.data as Map<String, dynamic>),
@@ -516,6 +530,31 @@ class QuotaStateNotifier extends Notifier<QuotaUiState> {
 
 final quotaStateProvider = NotifierProvider<QuotaStateNotifier, QuotaUiState>(
   QuotaStateNotifier.new,
+);
+
+// --- Output Speed (TPS) State ---
+
+class TpsUiState {
+  const TpsUiState({this.snapshot});
+
+  final TpsSnapshot? snapshot;
+
+  TpsUiState copyWith({TpsSnapshot? snapshot}) {
+    return TpsUiState(snapshot: snapshot ?? this.snapshot);
+  }
+}
+
+class TpsStateNotifier extends Notifier<TpsUiState> {
+  @override
+  TpsUiState build() => const TpsUiState();
+
+  void applySnapshot(TpsSnapshot snap) {
+    state = state.copyWith(snapshot: snap);
+  }
+}
+
+final tpsStateProvider = NotifierProvider<TpsStateNotifier, TpsUiState>(
+  TpsStateNotifier.new,
 );
 
 // --- Sessions List State ---

@@ -37,12 +37,17 @@ type TranscriptStep struct {
 	CreatedAt       string     `json:"created_at"`
 	CreatedAtUnix   int64      `json:"created_at_unix"`
 	Content         string     `json:"content,omitempty"`
+	UserMetadata    string     `json:"user_metadata,omitempty"`
 	Thinking        string     `json:"thinking,omitempty"`
 	Model           string     `json:"model,omitempty"`
 	ModelDisplay    string     `json:"model_display,omitempty"`
 	InputTokens     int64      `json:"input_tokens,omitempty"`
 	CacheReadTokens int64      `json:"cache_read_tokens,omitempty"`
 	OutputTokens    int64      `json:"output_tokens,omitempty"`
+	TTFTMs          int64      `json:"ttft_ms,omitempty"`
+	StreamingMs     int64      `json:"streaming_ms,omitempty"`
+	StreamTPS       float64    `json:"stream_tps,omitempty"`
+	E2ETPS          float64    `json:"e2e_tps,omitempty"`
 	ToolCalls       []ToolCall `json:"tool_calls,omitempty"`
 	Media           []MediaRef `json:"media,omitempty"`
 	TruncatedFields []string   `json:"truncated_fields,omitempty"`
@@ -481,6 +486,14 @@ func enrichStep(step *TranscriptStep) {
 			step.CreatedAtUnix = t.Unix()
 		}
 	}
+	if step.Type == "USER_INPUT" {
+		parsed := ParseUserInputContent(step.Content)
+		step.Content = parsed.Content
+		step.UserMetadata = parsed.Metadata
+		if step.CreatedAtUnix == 0 && parsed.LocalTimeUnix > 0 {
+			step.CreatedAtUnix = parsed.LocalTimeUnix
+		}
+	}
 	if step.CreatedAtUnix == 0 {
 		step.CreatedAtUnix = time.Now().Unix()
 	}
@@ -673,4 +686,94 @@ func cleanPreview(s string, maxRunes int) string {
 		return string(runes[:maxRunes]) + "..."
 	}
 	return s
+}
+
+var userInputTrailingTags = []string{
+	"ADDITIONAL_METADATA",
+	"USER_SETTINGS_CHANGE",
+}
+
+// ParsedUserInput separates Antigravity's outer prompt wrapper into clean user text
+// and preserved trailing metadata (local send time, model changes, uploaded images, etc.).
+type ParsedUserInput struct {
+	Content       string
+	Metadata      string
+	LocalTimeUnix int64
+}
+
+// ParseUserInputContent extracts the user message, preserved metadata blocks, and local
+// timestamp from Antigravity's wrapped USER_INPUT content without discarding metadata.
+func ParseUserInputContent(content string) ParsedUserInput {
+	s := strings.TrimSpace(content)
+	if !strings.HasPrefix(s, "<USER_REQUEST>") {
+		return ParsedUserInput{Content: s}
+	}
+	rest := strings.TrimPrefix(s, "<USER_REQUEST>")
+	var blocksReversed []string
+	var localTimeUnix int64
+
+	for {
+		trimmed := strings.TrimSpace(rest)
+		stripped := false
+		for _, tag := range userInputTrailingTags {
+			closeTag := "</" + tag + ">"
+			if strings.HasSuffix(trimmed, closeTag) {
+				openTag := "<" + tag + ">"
+				if idx := strings.LastIndex(trimmed, openTag); idx >= 0 {
+					inner := strings.TrimSpace(strings.TrimSuffix(trimmed[idx+len(openTag):], closeTag))
+					if inner != "" {
+						blocksReversed = append(blocksReversed, inner)
+						if localTimeUnix == 0 {
+							localTimeUnix = parseAdditionalMetadataTime(inner)
+						}
+					}
+					rest = trimmed[:idx]
+					stripped = true
+					break
+				}
+			}
+		}
+		if !stripped {
+			rest = trimmed
+			break
+		}
+	}
+	rest = strings.TrimSuffix(rest, "</USER_REQUEST>")
+
+	// Reverse collected trailing blocks back to their original order.
+	for i, j := 0, len(blocksReversed)-1; i < j; i, j = i+1, j-1 {
+		blocksReversed[i], blocksReversed[j] = blocksReversed[j], blocksReversed[i]
+	}
+
+	return ParsedUserInput{
+		Content:       strings.TrimSpace(rest),
+		Metadata:      strings.Join(blocksReversed, "\n\n"),
+		LocalTimeUnix: localTimeUnix,
+	}
+}
+
+func parseAdditionalMetadataTime(meta string) int64 {
+	const prefix = "The current local time is:"
+	for _, line := range strings.Split(meta, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		raw = strings.TrimSuffix(raw, ".")
+		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return t.Unix()
+		}
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
+}
+
+// CleanUserInputContent strips Antigravity's outer <USER_REQUEST> wrapper and trailing
+// <ADDITIONAL_METADATA> / <USER_SETTINGS_CHANGE> blocks while preserving any nested tags
+// pasted inside the user's actual message.
+func CleanUserInputContent(content string) string {
+	return ParseUserInputContent(content).Content
 }

@@ -212,6 +212,11 @@ class AgyHttpCarrier {
     return QuotaSnapshot.fromJson(data);
   }
 
+  Future<TpsSnapshot> getTps({bool refresh = true}) async {
+    final data = await callRpc('tps.get', {'refresh': refresh}) as Map<String, dynamic>;
+    return TpsSnapshot.fromJson(data);
+  }
+
   Future<QuotaSnapshot> calibrateQuota({
     required String poolId,
     double? remaining5hPct,

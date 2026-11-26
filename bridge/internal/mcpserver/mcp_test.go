@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,9 +12,12 @@ import (
 )
 
 func TestMCPInitializeAndToolsList(t *testing.T) {
+	tmp := t.TempDir()
 	cfg := &config.Config{
 		HostName:       "ClawStation",
 		ListenAddr:     "0.0.0.0:8765",
+		AntigravityDir: tmp,
+		StateDBPath:    filepath.Join(tmp, "state.db"),
 		BootstrapToken: "agy_live_test",
 	}
 	srv := New(cfg)
@@ -22,6 +26,7 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agy_remote_pairing_info","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agy_remote_tps","arguments":{}}}`,
 	}, "\n") + "\n"
 
 	var out bytes.Buffer
@@ -30,8 +35,8 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 JSON-RPC responses, got %d: %s", len(lines), out.String())
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 JSON-RPC responses, got %d: %s", len(lines), out.String())
 	}
 
 	var r2 map[string]any
@@ -40,10 +45,13 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 	result := r2["result"].(map[string]any)
 	tools := result["tools"].([]any)
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
 	}
 	if !strings.Contains(lines[2], "ClawStation") {
 		t.Fatalf("expected pairing info response to include hostName, got %s", lines[2])
+	}
+	if !strings.Contains(lines[3], "windowSeconds") {
+		t.Fatalf("expected agy_remote_tps response to include windowSeconds, got %s", lines[3])
 	}
 }

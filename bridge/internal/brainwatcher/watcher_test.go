@@ -3,6 +3,7 @@ package brainwatcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/antigravity-mobile/bridge/internal/statestore"
@@ -199,5 +200,76 @@ func TestReadStepsForClientCompactsNoiseAndHandlesLargeLines(t *testing.T) {
 	}
 	if _, hasQ := tcs[2].Args["questions"]; !hasQ {
 		t.Fatalf("expected ask_question questions preserved")
+	}
+}
+
+func TestCleanUserInputContentAndStepEnrichment(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain",
+			in:   "  hello world  ",
+			want: "hello world",
+		},
+		{
+			name: "standard wrapper",
+			in:   "<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T02:59:10-05:00.\n</ADDITIONAL_METADATA>",
+			want: "先优化",
+		},
+		{
+			name: "with user settings change and skill",
+			in:   "<USER_REQUEST>\n/last30days 查一下\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T03:00:00-05:00.\n<SKILL>...</SKILL>\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nModel changed\n</USER_SETTINGS_CHANGE>",
+			want: "/last30days 查一下",
+		},
+		{
+			name: "nested USER_REQUEST pasted inside user prompt",
+			in: "<USER_REQUEST>\n手机端查看 会话详情时，显示用户的输入：<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T02:59:10-05:00.\n</ADDITIONAL_METADATA>\n\n\n而在手机端的会话详情页发送消息时，反重力显示发送的消息是系统消息   。修复这两个问题\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T03:39:04-05:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nchanged\n</USER_SETTINGS_CHANGE>",
+			want: "手机端查看 会话详情时，显示用户的输入：<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T02:59:10-05:00.\n</ADDITIONAL_METADATA>\n\n\n而在手机端的会话详情页发送消息时，反重力显示发送的消息是系统消息   。修复这两个问题",
+		},
+		{
+			name: "truncated without closing tag",
+			in:   "<USER_REQUEST>\npartial message...",
+			want: "partial message...",
+		},
+	}
+	for _, tc := range cases {
+		if got := CleanUserInputContent(tc.in); got != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+
+	tmp := t.TempDir()
+	st, err := statestore.Open(filepath.Join(tmp, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	brainDir := filepath.Join(tmp, "brain")
+	logsDir := filepath.Join(brainDir, "conv-user", ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"","content":"<USER_REQUEST>\n你好\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T04:07:16-05:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nModel Selection changed\n</USER_SETTINGS_CHANGE>"}` + "\n"
+	if err := os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := New(brainDir, st, EventCallbacks{})
+	steps, _, err := w.ReadStepsForClient("conv-user", 0, 50)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("ReadStepsForClient failed: len=%d err=%v", len(steps), err)
+	}
+	if steps[0].Content != "你好" {
+		t.Fatalf("expected cleaned USER_INPUT content '你好', got %q", steps[0].Content)
+	}
+	if steps[0].CreatedAtUnix != 1795597636 {
+		t.Fatalf("expected parsed local time unix 1795597636, got %d", steps[0].CreatedAtUnix)
+	}
+	if !strings.Contains(steps[0].UserMetadata, "The current local time is: 2026-11-25T04:07:16-05:00.") ||
+		!strings.Contains(steps[0].UserMetadata, "Model Selection changed") {
+		t.Fatalf("expected preserved UserMetadata, got %q", steps[0].UserMetadata)
 	}
 }

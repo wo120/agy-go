@@ -223,6 +223,148 @@ class QuotaSnapshot {
   }
 }
 
+class TpsTurn {
+  const TpsTurn({
+    required this.conversationId,
+    required this.stepIndex,
+    required this.createdAtUnix,
+    required this.poolId,
+    required this.model,
+    required this.modelDisplay,
+    required this.outputTokens,
+    this.thinkingTokens = 0,
+    this.responseTokens = 0,
+    required this.ttftMs,
+    required this.streamingMs,
+    required this.streamTps,
+    required this.e2eTps,
+  });
+
+  final String conversationId;
+  final int stepIndex;
+  final int createdAtUnix;
+  final String poolId;
+  final String model;
+  final String modelDisplay;
+  final int outputTokens;
+  final int thinkingTokens;
+  final int responseTokens;
+  final int ttftMs;
+  final int streamingMs;
+  final double streamTps;
+  final double e2eTps;
+
+  factory TpsTurn.fromJson(Map<String, dynamic> json) {
+    final model = (json['model'] as String?) ?? '';
+    final display = (json['modelDisplay'] as String?) ?? '';
+    return TpsTurn(
+      conversationId: (json['conversationId'] as String?) ?? '',
+      stepIndex: (json['stepIndex'] as num?)?.toInt() ?? 0,
+      createdAtUnix: (json['createdAtUnix'] as num?)?.toInt() ?? 0,
+      poolId: (json['poolId'] as String?) ?? 'gemini',
+      model: model,
+      modelDisplay: display.isNotEmpty ? display : model,
+      outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
+      thinkingTokens: (json['thinkingTokens'] as num?)?.toInt() ?? 0,
+      responseTokens: (json['responseTokens'] as num?)?.toInt() ?? 0,
+      ttftMs: (json['ttftMs'] as num?)?.toInt() ?? 0,
+      streamingMs: (json['streamingMs'] as num?)?.toInt() ?? 0,
+      streamTps: (json['streamTps'] as num?)?.toDouble() ?? 0,
+      e2eTps: (json['e2eTps'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class ModelTpsStats {
+  const ModelTpsStats({
+    required this.model,
+    required this.modelDisplay,
+    required this.poolId,
+    required this.sampleCount,
+    required this.streamSamples,
+    required this.outputTokens,
+    required this.streamTps,
+    required this.e2eTps,
+    required this.avgTtftMs,
+    required this.lastActiveUnix,
+  });
+
+  final String model;
+  final String modelDisplay;
+  final String poolId;
+  final int sampleCount;
+  final int streamSamples;
+  final int outputTokens;
+  final double streamTps;
+  final double e2eTps;
+  final int avgTtftMs;
+  final int lastActiveUnix;
+
+  factory ModelTpsStats.fromJson(Map<String, dynamic> json) {
+    final model = (json['model'] as String?) ?? '';
+    final display = (json['modelDisplay'] as String?) ?? '';
+    return ModelTpsStats(
+      model: model,
+      modelDisplay: display.isNotEmpty ? display : model,
+      poolId: (json['poolId'] as String?) ?? 'gemini',
+      sampleCount: (json['sampleCount'] as num?)?.toInt() ?? 0,
+      streamSamples: (json['streamSamples'] as num?)?.toInt() ?? 0,
+      outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
+      streamTps: (json['streamTps'] as num?)?.toDouble() ?? 0,
+      e2eTps: (json['e2eTps'] as num?)?.toDouble() ?? 0,
+      avgTtftMs: (json['avgTtftMs'] as num?)?.toInt() ?? 0,
+      lastActiveUnix: (json['lastActiveUnix'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class TpsSnapshot {
+  const TpsSnapshot({
+    required this.updatedAt,
+    required this.windowSeconds,
+    required this.sampleCount,
+    required this.streamSamples,
+    required this.outputTokens,
+    required this.streamTps,
+    required this.e2eTps,
+    required this.avgTtftMs,
+    this.latest,
+    this.models = const [],
+  });
+
+  final int updatedAt;
+  final int windowSeconds;
+  final int sampleCount;
+  final int streamSamples;
+  final int outputTokens;
+  final double streamTps;
+  final double e2eTps;
+  final int avgTtftMs;
+  final TpsTurn? latest;
+  final List<ModelTpsStats> models;
+
+  bool get hasData => sampleCount > 0 || latest != null;
+
+  factory TpsSnapshot.fromJson(Map<String, dynamic> json) {
+    final latestMap = json['latest'] as Map<String, dynamic>?;
+    return TpsSnapshot(
+      updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
+      windowSeconds: (json['windowSeconds'] as num?)?.toInt() ?? 18000,
+      sampleCount: (json['sampleCount'] as num?)?.toInt() ?? 0,
+      streamSamples: (json['streamSamples'] as num?)?.toInt() ?? 0,
+      outputTokens: (json['outputTokens'] as num?)?.toInt() ?? 0,
+      streamTps: (json['streamTps'] as num?)?.toDouble() ?? 0,
+      e2eTps: (json['e2eTps'] as num?)?.toDouble() ?? 0,
+      avgTtftMs: (json['avgTtftMs'] as num?)?.toInt() ?? 0,
+      latest: latestMap != null ? TpsTurn.fromJson(latestMap) : null,
+      models: ((json['models'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ModelTpsStats.fromJson)
+          .toList(),
+    );
+  }
+}
+
 class SessionCard {
   const SessionCard({
     required this.conversationId,
@@ -385,9 +527,15 @@ class TranscriptStep {
     required this.status,
     required this.createdAtUnix,
     this.content = '',
+    this.userMetadata = '',
     this.thinking = '',
     this.model = '',
     this.modelDisplay = '',
+    this.outputTokens = 0,
+    this.ttftMs = 0,
+    this.streamingMs = 0,
+    this.streamTps = 0,
+    this.e2eTps = 0,
     this.toolCalls = const [],
   });
 
@@ -397,10 +545,18 @@ class TranscriptStep {
   final String status;
   final int createdAtUnix;
   final String content;
+  final String userMetadata;
   final String thinking;
   final String model;
   final String modelDisplay;
+  final int outputTokens;
+  final int ttftMs;
+  final int streamingMs;
+  final double streamTps;
+  final double e2eTps;
   final List<ToolCallItem> toolCalls;
+
+  bool get hasSpeedTelemetry => streamTps > 0 || e2eTps > 0;
 
   factory TranscriptStep.fromJson(Map<String, dynamic> json) {
     return TranscriptStep(
@@ -410,9 +566,15 @@ class TranscriptStep {
       status: (json['status'] as String?) ?? '',
       createdAtUnix: (json['created_at_unix'] as num?)?.toInt() ?? 0,
       content: (json['content'] as String?) ?? '',
+      userMetadata: (json['user_metadata'] as String?) ?? '',
       thinking: (json['thinking'] as String?) ?? '',
       model: (json['model'] as String?) ?? '',
       modelDisplay: (json['model_display'] as String?) ?? '',
+      outputTokens: (json['output_tokens'] as num?)?.toInt() ?? 0,
+      ttftMs: (json['ttft_ms'] as num?)?.toInt() ?? 0,
+      streamingMs: (json['streaming_ms'] as num?)?.toInt() ?? 0,
+      streamTps: (json['stream_tps'] as num?)?.toDouble() ?? 0,
+      e2eTps: (json['e2e_tps'] as num?)?.toDouble() ?? 0,
       toolCalls: ((json['tool_calls'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(ToolCallItem.fromJson)

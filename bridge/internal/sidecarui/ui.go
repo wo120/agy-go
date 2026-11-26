@@ -283,6 +283,19 @@ const indexHTMLTemplate = `<!DOCTYPE html>
   .fill.warn { background: var(--orange); }
   .warn-text { color: var(--orange); }
   .muted { color: var(--muted); font-size: 11.5px; }
+  .tps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+  .tps-metric { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 8px 9px; }
+  .tps-val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tps-val.hi { color: var(--green); }
+  .tps-val.sub { color: var(--blue); }
+  .tps-unit { font-size: 10.5px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+  .tps-latest { margin-top: 8px; padding: 7px 9px; border-radius: 9px; background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.22); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .tps-model-row { margin-top: 8px; }
+  .tps-model-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; }
+  .tps-model-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tps-model-speed { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; color: var(--green); white-space: nowrap; }
+  .tps-model-sub { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .fill.speed { background: linear-gradient(90deg, #34d399, #60a5fa); }
   .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: #1e2138; border: 1px solid var(--border); padding: 7px 14px; border-radius: 99px; font-size: 12px; display: none; }
 </style>
 </head>
@@ -330,6 +343,14 @@ const indexHTMLTemplate = `<!DOCTYPE html>
     <div class="muted" id="quotaUpdated" style="margin-top:4px;font-size:11px"></div>
   </div>
 
+  <div class="card">
+    <div class="row" style="margin-bottom:4px">
+      <div class="title" style="font-size:13.5px">输出速度监控 (TPS · 5h)</div>
+      <span class="pill" id="tpsBadge">等待采样</span>
+    </div>
+    <div id="tpsBox"><div class="muted" style="margin-top:6px">加载输出速度遥测中...</div></div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
@@ -371,6 +392,7 @@ function render(data) {
   document.getElementById("endpointsBox").innerHTML = eps.map(e => '<div class="ep">' + e + '</div>').join("");
 
   renderTunnel(data.tunnel || { state: "disabled" });
+  renderTPS(data.tps);
 
   const q = data.quota;
   if (q && q.pools) {
@@ -396,6 +418,94 @@ function render(data) {
 
 function escHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function fmtTtft(ms) {
+  if (!ms || ms <= 0) return "--";
+  if (ms < 1000) return ms + "ms";
+  return (ms / 1000).toFixed(1) + "s";
+}
+
+function fmtTokens(n) {
+  if (!n || n <= 0) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
+function fmtAgo(unixSec) {
+  if (!unixSec) return "";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSec);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return Math.floor(diff / 60) + "m 前";
+  if (diff < 86400) return Math.floor(diff / 3600) + "h 前";
+  return Math.floor(diff / 86400) + "d 前";
+}
+
+function renderTPS(t) {
+  const badge = document.getElementById("tpsBadge");
+  const box = document.getElementById("tpsBox");
+  if (!t || (!t.sampleCount && !t.latest)) {
+    badge.textContent = "暂无样本";
+    badge.className = "pill";
+    box.innerHTML = '<div class="muted" style="margin-top:6px">近 5h 暂无模型输出记录，完成一轮对话后自动采集。</div>';
+    return;
+  }
+
+  const latest = t.latest;
+  if (latest) {
+    const latestRate = latest.streamTps > 0 ? latest.streamTps.toFixed(1) : latest.e2eTps.toFixed(1);
+    const label = latest.streamTps > 0 ? "最近 " + latestRate + " tok/s" : "E2E " + latestRate + " tok/s";
+    badge.textContent = label;
+    badge.className = "pill ok";
+  } else {
+    badge.textContent = t.sampleCount + " 轮";
+    badge.className = "pill";
+  }
+
+  const streamText = t.streamTps > 0 ? t.streamTps.toFixed(1) : "--";
+  const e2eText = t.e2eTps > 0 ? t.e2eTps.toFixed(1) : "--";
+  let html =
+    '<div class="tps-grid">' +
+      '<div class="tps-metric"><div class="muted">流式 TPS</div><div class="tps-val hi">' + streamText + '<span class="tps-unit">tok/s</span></div></div>' +
+      '<div class="tps-metric"><div class="muted">端到端 E2E</div><div class="tps-val sub">' + e2eText + '<span class="tps-unit">tok/s</span></div></div>' +
+      '<div class="tps-metric"><div class="muted">平均 TTFT</div><div class="tps-val">' + fmtTtft(t.avgTtftMs) + '</div></div>' +
+    '</div>';
+
+  if (latest) {
+    const lSpeed = latest.streamTps > 0 ? latest.streamTps.toFixed(1) + " tok/s" : "E2E " + latest.e2eTps.toFixed(1) + " tok/s";
+    html +=
+      '<div class="tps-latest">' +
+        '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">最近一轮：<b>' + escHtml(latest.modelDisplay || latest.model) + '</b></span>' +
+        '<span style="white-space:nowrap;color:var(--green);font-weight:600">' + lSpeed + ' · TTFT ' + fmtTtft(latest.ttftMs) + ' · ' + fmtAgo(latest.createdAtUnix) + '</span>' +
+      '</div>';
+  }
+
+  const models = t.models || [];
+  if (models.length > 0) {
+    let maxTps = 1;
+    for (const m of models) {
+      const v = m.streamTps > 0 ? m.streamTps : m.e2eTps;
+      if (v > maxTps) maxTps = v;
+    }
+    html += '<div style="margin-top:10px">';
+    for (const m of models.slice(0, 6)) {
+      const primary = m.streamTps > 0 ? m.streamTps : m.e2eTps;
+      const pct = Math.max(6, Math.min(100, Math.round((primary / maxTps) * 100)));
+      const speedLabel = m.streamTps > 0 ? m.streamTps.toFixed(1) + " tok/s" : "E2E " + m.e2eTps.toFixed(1) + " tok/s";
+      html +=
+        '<div class="tps-model-row">' +
+          '<div class="tps-model-head"><span class="tps-model-name">' + escHtml(m.modelDisplay || m.model) + '</span><span class="tps-model-speed">' + speedLabel + '</span></div>' +
+          '<div class="track" style="margin-top:4px"><div class="fill speed" style="width:' + pct + '%"></div></div>' +
+          '<div class="tps-model-sub"><span>E2E ' + m.e2eTps.toFixed(1) + ' tok/s · TTFT ' + fmtTtft(m.avgTtftMs) + '</span><span>' + fmtTokens(m.outputTokens) + ' tok · ' + m.sampleCount + ' 轮</span></div>' +
+        '</div>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div class="muted" style="margin-top:8px">近 5h 窗口暂无样本（上方为最近历史记录）</div>';
+  }
+
+  box.innerHTML = html;
 }
 
 function renderTunnel(t) {

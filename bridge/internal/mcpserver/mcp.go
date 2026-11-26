@@ -18,6 +18,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/config"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tpsmonitor"
 )
 
 type rpcReq struct {
@@ -141,7 +142,12 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "agy_remote_status",
-			"description": "Check agy-remote bridge status, LAN/Tailscale direct endpoints, desktop runtime health, connected mobile clients, and 5h/7d model quota snapshot.",
+			"description": "Check agy-remote bridge status, LAN/Tailscale direct endpoints, desktop runtime health, connected mobile clients, 5h/7d model quota snapshot, and 5h output speed (TPS) summary.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
+			"name":        "agy_remote_tps",
+			"description": "Inspect real-time and rolling 5h LLM output speed (Stream TPS, E2E TPS, average TTFT, latest turn speed, and per-model breakdown) collected from Antigravity.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
@@ -171,6 +177,8 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	switch name {
 	case "agy_remote_status":
 		return s.toolStatus(ctx)
+	case "agy_remote_tps":
+		return s.toolTPS(ctx)
 	case "agy_remote_pairing_info":
 		payload := s.cfg.BuildPairingPayload(s.cfg.BootstrapToken)
 		raw, _ := json.MarshalIndent(payload, "", "  ")
@@ -202,7 +210,17 @@ func (s *Server) toolStatus(ctx context.Context) (string, bool) {
 	quota, _ := quotamonitor.NewMonitor(st, s.cfg.SubscriptionTier, s.cfg.Gemini5hBudget, s.cfg.Gemini7dBudget, s.cfg.Claude5hBudget, s.cfg.Claude7dBudget, lsProv)
 	snap, _ := quota.Snapshot(ctx)
 	reader := agyreader.New(filepath.Join(s.cfg.AntigravityDir, "conversation_summaries.db"))
-	recent, _ := reader.ListRootSummaries(5)
+	recent, _ := reader.ListRootSummaries(20)
+	tps := tpsmonitor.NewMonitor(filepath.Join(s.cfg.AntigravityDir, "daemon"), st)
+	refs := make([]tpsmonitor.ConversationRef, 0, len(recent))
+	for _, r := range recent {
+		refs = append(refs, tpsmonitor.ConversationRef{
+			ConversationID:   r.ConversationID,
+			LastModifiedUnix: r.LastModifiedUnix,
+		})
+	}
+	tps.SyncRecent(ctx, refs)
+	tpsSnap, _ := tps.Snapshot(ctx)
 	runner := cmdrunner.New(s.cfg.AgentAPIBin, filepath.Join(s.cfg.AntigravityDir, "daemon"))
 
 	out, _ := json.MarshalIndent(map[string]any{
@@ -213,7 +231,36 @@ func (s *Server) toolStatus(ctx context.Context) (string, bool) {
 		"desktopOnline": runner.IsDesktopOnline(),
 		"recentCount":   len(recent),
 		"quota":         snap,
+		"tps":           tpsSnap,
 	}, "", "  ")
+	return string(out), false
+}
+
+func (s *Server) toolTPS(ctx context.Context) (string, bool) {
+	st, err := statestore.Open(s.cfg.StateDBPath)
+	if err != nil {
+		return fmt.Sprintf("failed to open state db: %v", err), true
+	}
+	defer st.Close()
+
+	watcher := brainwatcher.New(filepath.Join(s.cfg.AntigravityDir, "brain"), st, brainwatcher.EventCallbacks{})
+	_ = watcher.ScanAll()
+	reader := agyreader.New(filepath.Join(s.cfg.AntigravityDir, "conversation_summaries.db"))
+	recent, _ := reader.ListRootSummaries(25)
+	refs := make([]tpsmonitor.ConversationRef, 0, len(recent))
+	for _, r := range recent {
+		refs = append(refs, tpsmonitor.ConversationRef{
+			ConversationID:   r.ConversationID,
+			LastModifiedUnix: r.LastModifiedUnix,
+		})
+	}
+	tps := tpsmonitor.NewMonitor(filepath.Join(s.cfg.AntigravityDir, "daemon"), st)
+	tps.SyncRecent(ctx, refs)
+	snap, err := tps.Snapshot(ctx)
+	if err != nil {
+		return fmt.Sprintf("failed to compute TPS snapshot: %v", err), true
+	}
+	out, _ := json.MarshalIndent(snap, "", "  ")
 	return string(out), false
 }
 

@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:agy_client/agy_client.dart';
 import 'package:agy_mobile/state/app_state.dart';
 import 'package:agy_mobile/state/native_bridge.dart';
-import 'package:agy_mobile/theme/levity_theme.dart';
+import 'package:agy_mobile/theme/agy_theme.dart';
 import 'package:agy_mobile/ui/chat/chat_screen.dart';
 import 'package:agy_mobile/ui/home/home_screen.dart';
 import 'package:agy_mobile/ui/home/new_session_sheet.dart';
@@ -218,7 +218,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: buildLevityTheme(),
+        theme: buildAgyTheme(),
         home: Scaffold(
           body: SessionSummaryCard(
             card: cardZero,
@@ -255,7 +255,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: buildLevityTheme(),
+        theme: buildAgyTheme(),
         home: Scaffold(
           body: SessionSummaryCard(
             card: cardWithArtifacts,
@@ -278,7 +278,7 @@ void main() {
           quotaStateProvider.overrideWith(_FakeQuotaNotifier.new),
         ],
         child: MaterialApp(
-          theme: buildLevityTheme(),
+          theme: buildAgyTheme(),
           home: Scaffold(
             body: QuotaDashboardCard(onTapHost: () {}),
           ),
@@ -306,7 +306,7 @@ void main() {
           sessionsStateProvider.overrideWith(_FakeSessionsNotifier.new),
         ],
         child: MaterialApp(
-          theme: buildLevityTheme(),
+          theme: buildAgyTheme(),
           home: const HomeScreen(),
         ),
       ),
@@ -360,7 +360,7 @@ void main() {
           chatSessionProvider.overrideWith(_FakeChatSessionNotifier.new),
         ],
         child: MaterialApp(
-          theme: buildLevityTheme(),
+          theme: buildAgyTheme(),
           home: const ChatScreen(conversationId: 'c-tail'),
         ),
       ),
@@ -395,7 +395,7 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        theme: buildLevityTheme(),
+        theme: buildAgyTheme(),
         home: Scaffold(
           body: NewSessionSheet(
             workspaces: const [
@@ -446,7 +446,7 @@ void main() {
     // Offline fallback when models list is empty
     await tester.pumpWidget(
       MaterialApp(
-        theme: buildLevityTheme(),
+        theme: buildAgyTheme(),
         home: Scaffold(
           body: NewSessionSheet(
             workspaces: const [],
@@ -476,7 +476,7 @@ void main() {
           chatSessionProvider.overrideWith(() => _FailingChatSessionNotifier(() => reloadCount++)),
         ],
         child: MaterialApp(
-          theme: buildLevityTheme(),
+          theme: buildAgyTheme(),
           home: const ChatScreen(conversationId: 'c-err'),
         ),
       ),
@@ -598,7 +598,7 @@ void main() {
           hostConnectionProvider.overrideWith(() => _ReconnectingHostNotifier(() => verifyCount++)),
         ],
         child: MaterialApp(
-          theme: buildLevityTheme(),
+          theme: buildAgyTheme(),
           home: const PairingScreen(),
         ),
       ),
@@ -611,6 +611,323 @@ void main() {
     expect(find.textContaining('未连接宿主机'), findsOneWidget);
     expect(find.textContaining('已直连'), findsNothing);
   });
+
+  test('formatMessageTime formats today, same year, and cross-year accurately', () {
+    final now = DateTime(2026, 11, 25, 14, 30);
+    final sameDay = DateTime(2026, 11, 25, 4, 7).millisecondsSinceEpoch ~/ 1000;
+    final earlierDay = DateTime(2026, 11, 24, 22, 53).millisecondsSinceEpoch ~/ 1000;
+    final prevYear = DateTime(2025, 12, 31, 9, 5).millisecondsSinceEpoch ~/ 1000;
+
+    expect(formatMessageTime(0, now: now), '');
+    expect(formatMessageTime(sameDay, now: now), '04:07');
+    expect(formatMessageTime(earlierDay, now: now), '11-24 22:53');
+    expect(formatMessageTime(prevYear, now: now), '2025-12-31 09:05');
+  });
+
+  testWidgets('ChatScreen shows send time and allows toggling preserved user metadata', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(_UserMetaChatSessionNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-meta'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('先优化'), findsOneWidget);
+    expect(find.text(formatMessageTime(1795597636)), findsAtLeastNWidgets(1));
+    expect(find.text('元信息'), findsOneWidget);
+    expect(find.textContaining('The current local time is:'), findsNothing);
+
+    await tester.tap(find.text('元信息'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('收起元信息'), findsOneWidget);
+    expect(find.textContaining('The current local time is: 2026-11-25T04:07:16-05:00.'), findsOneWidget);
+  });
+
+  testWidgets('HomeScreen 3-tab bottom dock switches between sessions, alerts, and host tabs', (tester) async {
+    var verifyCount = 0;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(() => _ReconnectingHostNotifier(() => verifyCount++)),
+          quotaStateProvider.overrideWith(_FakeQuotaNotifier.new),
+          sessionsStateProvider.overrideWith(_FakeSessionsNotifier.new),
+          alertsStateProvider.overrideWith(_FakeUnreadAlertsNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const HomeScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Tab 0 (对话) shows AGY Go header, FAB, and unread alert badge "2"
+    expect(find.text('AGY Go'), findsOneWidget);
+    expect(find.byKey(const Key('home_new_session_fab')), findsOneWidget);
+    final unreadBadgeFinder = find.descendant(
+      of: find.byKey(const Key('nav_tab_alerts')),
+      matching: find.text('2'),
+    );
+    expect(unreadBadgeFinder, findsOneWidget);
+    expect(verifyCount, 0);
+
+    // Switch to Tab 1 (提醒): clears unread badge, hides FAB, shows AlertsScreen header
+    await tester.tap(find.byKey(const Key('nav_tab_alerts')));
+    await tester.pumpAndSettle();
+    expect(find.text('提醒中心'), findsOneWidget);
+    expect(find.byKey(const Key('home_new_session_fab')), findsNothing);
+    expect(unreadBadgeFinder, findsNothing);
+
+    // Switch to Tab 2 (主机): triggers verifyConnection once and shows Host panel
+    await tester.tap(find.byKey(const Key('nav_tab_host')));
+    await tester.pumpAndSettle();
+    expect(verifyCount, 1);
+    expect(find.text('主机与连接'), findsOneWidget);
+    expect(find.byKey(const Key('home_new_session_fab')), findsNothing);
+
+    // Switch back to Tab 0 (对话): restores FAB
+    await tester.tap(find.byKey(const Key('nav_tab_sessions')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('home_new_session_fab')), findsOneWidget);
+  });
+
+  testWidgets('Redesigned HomeScreen and ChatScreen render cleanly on narrow 360dp viewport without overflow', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          quotaStateProvider.overrideWith(_FakeQuotaNotifier.new),
+          sessionsStateProvider.overrideWith(_FakeDesktopSessionsNotifier.new),
+          alertsStateProvider.overrideWith(_FakeUnreadAlertsNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const HomeScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Gemini'), findsOneWidget);
+    expect(find.text('Claude · GPT'), findsOneWidget);
+    expect(find.text('已置顶'), findsOneWidget);
+    expect(find.text('原创 UI 重构方案与验证'), findsOneWidget);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        key: const ValueKey('chat_narrow_scope'),
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(_UserMetaChatSessionNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-meta'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('QuotaDashboardCard renders TPS strip and opens per-model breakdown sheet cleanly on 360dp', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          quotaStateProvider.overrideWith(_FakeQuotaNotifier.new),
+          tpsStateProvider.overrideWith(_FakeTpsNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: Scaffold(
+            body: Padding(
+              padding: const EdgeInsets.all(16),
+              child: QuotaDashboardCard(onTapHost: () {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('143.0 tok/s'), findsOneWidget);
+    expect(find.textContaining('E2E 72.0 · TTFT 6.5s'), findsOneWidget);
+    expect(find.text('最近：Gemini 4 Neon (High)'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('quota_tps_strip')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('输出速度监控 (TPS · 5h)'), findsOneWidget);
+    expect(find.text('近 5h 分模型速度'), findsOneWidget);
+    expect(find.text('Gemini 4 Neon (High)'), findsOneWidget);
+    expect(find.text('Claude Opus 5.5 (High)'), findsOneWidget);
+  });
+
+  testWidgets('ChatScreen displays per-turn TPS badge and expands Stream/E2E/TTFT details on tap', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(_SpeedChatSessionNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-speed'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('152 tok/s'), findsOneWidget);
+    expect(find.textContaining('TTFT 6.2s'), findsNothing);
+
+    await tester.tap(find.text('152 tok/s'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('流式 152.4 tok/s · E2E 95.8 tok/s · TTFT 6.2s · 1600 tok'), findsOneWidget);
+  });
+}
+
+class _FakeDesktopSessionsNotifier extends SessionsStateNotifier {
+  @override
+  SessionsUiState build() {
+    const ws = WorkspaceInfo(
+      kind: 'workspace',
+      label: 'antigravity-mobile',
+      rootPath: '/Users/apple/go-project/ai/antigravity-mobile',
+    );
+    return const SessionsUiState(
+      mode: 'desktop',
+      pinned: [
+        SessionCard(
+          conversationId: 'p1',
+          title: '原创 UI 重构方案与验证',
+          preview: '切换到碳黑工业控制台风格并完成全量测试。',
+          stepCount: 12,
+          lastModifiedUnix: 1795527000,
+          workspace: ws,
+          status: 'IDLE',
+          running: false,
+          subagentCount: 2,
+          artifactCount: 3,
+          modelDisplay: 'Gemini 4 Neon · High',
+          pinned: true,
+          pinnedOrder: 1,
+          unread: true,
+          needsConfirm: false,
+        ),
+      ],
+      regular: [
+        SessionCard(
+          conversationId: 'r1',
+          title: '等待确认的生产发布清单',
+          preview: '请确认是否立即发布 Android APK。',
+          stepCount: 5,
+          lastModifiedUnix: 1795526000,
+          workspace: ws,
+          status: 'WAITING',
+          running: false,
+          subagentCount: 0,
+          artifactCount: 1,
+          modelDisplay: 'Claude Opus 5.5 · High',
+          pinned: false,
+          pinnedOrder: 0,
+          unread: false,
+          needsConfirm: true,
+        ),
+      ],
+    );
+  }
+}
+
+class _FakeUnreadAlertsNotifier extends AlertsStateNotifier {
+  @override
+  AlertsUiState build() {
+    return const AlertsUiState(
+      unreadCount: 2,
+      alerts: [
+        AgentAlert(
+          alertId: 'a1',
+          conversationId: 'c1',
+          kind: 'NEED_CONFIRM',
+          title: '等待确认架构方案',
+          body: '是否继续执行？',
+          workspace: 'antigravity-mobile',
+          createdAt: 1795527000,
+          quickReplies: ['继续'],
+        ),
+      ],
+    );
+  }
+}
+
+class _UserMetaChatSessionNotifier extends ChatSessionNotifier {
+  @override
+  ChatSessionState build(String conversationId) {
+    const steps = [
+      TranscriptStep(
+        stepIndex: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        createdAtUnix: 1795597636,
+        content: '<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T04:07:16-05:00.\n</ADDITIONAL_METADATA>',
+      ),
+      TranscriptStep(
+        stepIndex: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        createdAtUnix: 1795597642,
+        modelDisplay: 'Hydrogen · High',
+        content: '好的，已处理。',
+      ),
+    ];
+    return ChatSessionState(
+      session: const SessionCard(
+        conversationId: 'c-meta',
+        title: '元信息测试',
+        preview: '好的，已处理。',
+        stepCount: 2,
+        lastModifiedUnix: 1795597642,
+        workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+        status: 'IDLE',
+        running: false,
+        subagentCount: 0,
+        artifactCount: 0,
+        pinned: false,
+        pinnedOrder: 0,
+        unread: false,
+        needsConfirm: false,
+      ),
+      steps: steps,
+      rows: TranscriptReducer.reduce(steps),
+      loading: false,
+    );
+  }
 }
 
 class _ReconnectingHostNotifier extends HostConnectionNotifier {
@@ -656,5 +973,113 @@ class _FailingChatSessionNotifier extends ChatSessionNotifier {
   @override
   Future<void> reload() async {
     onReload();
+  }
+}
+
+class _FakeTpsNotifier extends TpsStateNotifier {
+  @override
+  TpsUiState build() {
+    return const TpsUiState(
+      snapshot: TpsSnapshot(
+        updatedAt: 1795600000,
+        windowSeconds: 18000,
+        sampleCount: 15,
+        streamSamples: 12,
+        outputTokens: 24500,
+        streamTps: 143.0,
+        e2eTps: 72.0,
+        avgTtftMs: 6500,
+        latest: TpsTurn(
+          conversationId: 'c-1',
+          stepIndex: 8,
+          createdAtUnix: 1795599990,
+          poolId: 'gemini',
+          model: 'gemini-4-neon',
+          modelDisplay: 'Gemini 4 Neon (High)',
+          outputTokens: 1600,
+          ttftMs: 6200,
+          streamingMs: 10500,
+          streamTps: 152.4,
+          e2eTps: 95.8,
+        ),
+        models: [
+          ModelTpsStats(
+            model: 'gemini-4-neon',
+            modelDisplay: 'Gemini 4 Neon (High)',
+            poolId: 'gemini',
+            sampleCount: 12,
+            streamSamples: 10,
+            outputTokens: 20000,
+            streamTps: 148.5,
+            e2eTps: 75.0,
+            avgTtftMs: 7000,
+            lastActiveUnix: 1795599990,
+          ),
+          ModelTpsStats(
+            model: 'claude-opus-5-5',
+            modelDisplay: 'Claude Opus 5.5 (High)',
+            poolId: 'claude_gpt',
+            sampleCount: 3,
+            streamSamples: 2,
+            outputTokens: 4500,
+            streamTps: 88.2,
+            e2eTps: 68.4,
+            avgTtftMs: 2600,
+            lastActiveUnix: 1795599500,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SpeedChatSessionNotifier extends ChatSessionNotifier {
+  @override
+  ChatSessionState build(String conversationId) {
+    const steps = [
+      TranscriptStep(
+        stepIndex: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        createdAtUnix: 1795599980,
+        content: '测一下速度展示',
+      ),
+      TranscriptStep(
+        stepIndex: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        createdAtUnix: 1795599990,
+        modelDisplay: 'Neon · High',
+        content: '这是带 TPS 指标的回复。',
+        outputTokens: 1600,
+        ttftMs: 6200,
+        streamingMs: 10500,
+        streamTps: 152.4,
+        e2eTps: 95.8,
+      ),
+    ];
+    return ChatSessionState(
+      session: const SessionCard(
+        conversationId: 'c-speed',
+        title: 'TPS 展示测试',
+        preview: '这是带 TPS 指标的回复。',
+        stepCount: 2,
+        lastModifiedUnix: 1795599990,
+        workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+        status: 'IDLE',
+        running: false,
+        subagentCount: 0,
+        artifactCount: 0,
+        pinned: false,
+        pinnedOrder: 0,
+        unread: false,
+        needsConfirm: false,
+      ),
+      steps: steps,
+      rows: TranscriptReducer.reduce(steps),
+      loading: false,
+    );
   }
 }

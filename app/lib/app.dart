@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'state/app_state.dart';
 import 'state/native_bridge.dart';
-import 'theme/levity_theme.dart';
+import 'theme/agy_theme.dart';
 import 'ui/chat/chat_screen.dart';
 import 'ui/home/home_screen.dart';
 
@@ -48,7 +48,7 @@ class _AgyMobileAppState extends ConsumerState<AgyMobileApp> with WidgetsBinding
       navigatorKey: rootNavigatorKey,
       title: 'AGY Go',
       debugShowCheckedModeBanner: false,
-      theme: buildLevityTheme(),
+      theme: buildAgyTheme(),
       home: const HomeScreen(),
     );
   }

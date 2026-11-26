@@ -27,6 +27,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tpsmonitor"
 	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
 
@@ -121,6 +122,7 @@ type Server struct {
 	reader   *agyreader.Reader
 	watcher  *brainwatcher.Watcher
 	quota    *quotamonitor.Monitor
+	tps      *tpsmonitor.Monitor
 	runner   *cmdrunner.Runner
 	notifier *notifier.Manager
 	tunnel   TunnelProvider
@@ -140,6 +142,9 @@ type Server struct {
 
 	quotaSigMu   sync.Mutex
 	lastQuotaSig string
+
+	tpsSigMu   sync.Mutex
+	lastTPSSig string
 }
 
 // New constructs the HTTP/WebSocket bridge server.
@@ -231,6 +236,11 @@ func (s *Server) SetTunnel(tp TunnelProvider) {
 	s.tunnel = tp
 }
 
+// SetTPSMonitor attaches the output-speed (TPS) telemetry collector.
+func (s *Server) SetTPSMonitor(m *tpsmonitor.Monitor) {
+	s.tps = m
+}
+
 // EnableTunnel starts the embedded 5G remote tunnel.
 func (s *Server) EnableTunnel() error {
 	if s.tunnel == nil {
@@ -285,6 +295,10 @@ func (s *Server) StatusSummaryWithRefresh(ctx context.Context, forceQuota bool) 
 		}
 	}
 	payload := s.cfg.BuildPairingPayloadWithExtra(s.cfg.BootstrapToken, extraEndpoints)
+	tpsSnap := s.tpsSnapshot(ctx, forceQuota)
+	if tpsSnap != nil {
+		s.broadcastTPSIfChanged(tpsSnap)
+	}
 	return map[string]any{
 		"hostName":         s.cfg.HostName,
 		"listenAddr":       s.cfg.ListenAddr,
@@ -294,6 +308,7 @@ func (s *Server) StatusSummaryWithRefresh(ctx context.Context, forceQuota bool) 
 		"pairing":          payload,
 		"tunnel":           tunnelStatus,
 		"quota":            snap,
+		"tps":              tpsSnap,
 		"recentAlerts":     s.notifier.Recent(10),
 	}
 }
@@ -365,7 +380,17 @@ func (s *Server) handleInternalHook(w http.ResponseWriter, r *http.Request) {
 
 // OnStepsAppended bridges brainwatcher updates onto active WS channels and alert triggers.
 func (s *Server) OnStepsAppended(convID string, steps []brainwatcher.TranscriptStep, stats brainwatcher.ConversationStats) {
+	hasPlanner := false
+	for _, st := range steps {
+		if st.Type == "PLANNER_RESPONSE" {
+			hasPlanner = true
+			break
+		}
+	}
 	visible := brainwatcher.CompactStepsForClient(steps)
+	if hasPlanner && s.tps != nil {
+		s.enrichStepsWithSpeed(context.Background(), convID, visible, true)
+	}
 	if len(visible) > 0 {
 		s.broadcast("session:"+convID, "step.upsert", map[string]any{
 			"conversationId": convID,
@@ -390,6 +415,11 @@ func (s *Server) OnStepsAppended(convID string, steps []brainwatcher.TranscriptS
 	}
 	if snap, err := s.quota.RefreshSnapshot(context.Background()); err == nil {
 		s.broadcastQuotaIfChanged(snap)
+	}
+	if hasPlanner {
+		if tpsSnap := s.tpsSnapshot(context.Background(), false); tpsSnap != nil {
+			s.broadcastTPSIfChanged(tpsSnap)
+		}
 	}
 }
 
@@ -421,6 +451,9 @@ func (s *Server) StartStatePoller(ctx context.Context) {
 				if ticks%4 == 0 && s.ConnectedClientCount() > 0 {
 					if snap, err := s.quota.RefreshSnapshot(ctx); err == nil && snap != nil {
 						s.broadcastQuotaIfChanged(snap)
+					}
+					if tpsSnap := s.tpsSnapshot(ctx, true); tpsSnap != nil {
+						s.broadcastTPSIfChanged(tpsSnap)
 					}
 				}
 			}
@@ -460,6 +493,93 @@ func (s *Server) broadcastQuotaIfChanged(snap *quotamonitor.QuotaSnapshot) {
 	s.quotaSigMu.Unlock()
 	if changed {
 		s.broadcast("$global", "quota.updated", snap)
+	}
+}
+
+func (s *Server) tpsSnapshot(ctx context.Context, syncRecent bool) *tpsmonitor.TPSSnapshot {
+	if s.tps == nil {
+		return &tpsmonitor.TPSSnapshot{
+			UpdatedAt:     time.Now().Unix(),
+			WindowSeconds: tpsmonitor.Window5hSeconds,
+			Models:        []tpsmonitor.ModelTPSStats{},
+		}
+	}
+	if syncRecent {
+		if raws, err := s.reader.ListRootSummaries(20); err == nil && len(raws) > 0 {
+			refs := make([]tpsmonitor.ConversationRef, 0, len(raws))
+			for _, r := range raws {
+				refs = append(refs, tpsmonitor.ConversationRef{
+					ConversationID:   r.ConversationID,
+					LastModifiedUnix: r.LastModifiedUnix,
+				})
+			}
+			s.tps.SyncRecent(ctx, refs)
+		}
+	}
+	snap, err := s.tps.Snapshot(ctx)
+	if err != nil {
+		return &tpsmonitor.TPSSnapshot{
+			UpdatedAt:     time.Now().Unix(),
+			WindowSeconds: tpsmonitor.Window5hSeconds,
+			Models:        []tpsmonitor.ModelTPSStats{},
+		}
+	}
+	return snap
+}
+
+func (s *Server) enrichStepsWithSpeed(ctx context.Context, convID string, steps []brainwatcher.TranscriptStep, syncFirst bool) {
+	if s.tps == nil || len(steps) == 0 {
+		return
+	}
+	if syncFirst {
+		var fallbackUnix int64
+		if raw, err := s.reader.GetSummary(convID); err == nil && raw != nil {
+			fallbackUnix = raw.LastModifiedUnix
+		}
+		_, _ = s.tps.SyncConversationWithFallback(ctx, convID, fallbackUnix)
+	}
+	speeds := s.tps.StepSpeedsForConversation(convID)
+	if len(speeds) == 0 {
+		return
+	}
+	for i := range steps {
+		if sp, ok := speeds[steps[i].StepIndex]; ok {
+			if steps[i].OutputTokens == 0 && sp.OutputTokens > 0 {
+				steps[i].OutputTokens = sp.OutputTokens
+			}
+			steps[i].TTFTMs = sp.TTFTMs
+			steps[i].StreamingMs = sp.StreamingMs
+			steps[i].StreamTPS = sp.StreamTPS
+			steps[i].E2ETPS = sp.E2ETPS
+		}
+	}
+}
+
+func tpsSignature(snap *tpsmonitor.TPSSnapshot) string {
+	if snap == nil {
+		return ""
+	}
+	latestKey := ""
+	if snap.Latest != nil {
+		latestKey = fmt.Sprintf("%s:%d:%.1f:%.1f", snap.Latest.ConversationID, snap.Latest.StepIndex, snap.Latest.StreamTPS, snap.Latest.E2ETPS)
+	}
+	return fmt.Sprintf("%d:%d:%d:%.1f:%.1f:%d|%s",
+		snap.SampleCount, snap.StreamSamples, snap.OutputTokens, snap.StreamTPS, snap.E2ETPS, snap.AvgTTFTMs, latestKey)
+}
+
+func (s *Server) broadcastTPSIfChanged(snap *tpsmonitor.TPSSnapshot) {
+	if snap == nil {
+		return
+	}
+	sig := tpsSignature(snap)
+	s.tpsSigMu.Lock()
+	changed := sig != s.lastTPSSig
+	if changed {
+		s.lastTPSSig = sig
+	}
+	s.tpsSigMu.Unlock()
+	if changed {
+		s.broadcast("$global", "tps.updated", snap)
 	}
 }
 
@@ -620,6 +740,19 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		s.broadcastQuotaIfChanged(snap)
 		return okResp(snap)
 
+	case "tps.get":
+		var p struct {
+			Refresh *bool `json:"refresh"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		doSync := true
+		if p.Refresh != nil {
+			doSync = *p.Refresh
+		}
+		tpsSnap := s.tpsSnapshot(ctx, doSync)
+		s.broadcastTPSIfChanged(tpsSnap)
+		return okResp(tpsSnap)
+
 	case "quota.calibrate":
 		var in quotamonitor.CalibrationInput
 		if err := json.Unmarshal(req.Params, &in); err != nil || in.PoolID == "" {
@@ -687,6 +820,7 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		if err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
 		}
+		s.enrichStepsWithSpeed(ctx, p.ConversationID, steps, true)
 		artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", p.ConversationID))
 		return okResp(map[string]any{
 			"session":   card,
@@ -939,10 +1073,12 @@ func (s *Server) subscribeClient(c *wsClient, channel string) {
 	if channel == "$global" {
 		list, _ := s.buildSessionList("desktop", 100)
 		snap, _ := s.quota.Snapshot(context.Background())
+		tpsSnap := s.tpsSnapshot(context.Background(), false)
 		payload = map[string]any{
 			"hostName":      s.cfg.HostName,
 			"desktopOnline": s.runner.IsDesktopOnline(),
 			"quota":         snap,
+			"tps":           tpsSnap,
 			"sessions":      list,
 			"unreadAlerts":  len(s.notifier.Recent(20)),
 		}
@@ -950,6 +1086,7 @@ func (s *Server) subscribeClient(c *wsClient, channel string) {
 		convID := strings.TrimPrefix(channel, "session:")
 		card, _ := s.buildSessionCard(convID)
 		steps, hasMore, _ := s.watcher.ReadStepsForClient(convID, 0, 80)
+		s.enrichStepsWithSpeed(context.Background(), convID, steps, true)
 		artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", convID))
 		payload = map[string]any{
 			"session":   card,

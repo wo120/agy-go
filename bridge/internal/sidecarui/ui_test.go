@@ -1,11 +1,14 @@
 package sidecarui
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/antigravity-mobile/bridge/internal/agyreader"
 	"github.com/antigravity-mobile/bridge/internal/brainwatcher"
@@ -15,6 +18,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tpsmonitor"
 	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
 
@@ -73,15 +77,51 @@ func TestSidecarUIStatusAndTokenAuth(t *testing.T) {
 	runner := cmdrunner.New(filepath.Join(tmp, "agentapi"), filepath.Join(tmp, "daemon"))
 	notif := notifier.NewManager(st)
 	hub := hubserver.New(cfg, st, reader, watcher, quota, runner, notif)
+	tpsMon := tpsmonitor.NewMonitor(filepath.Join(tmp, "daemon"), st)
+	hub.SetTPSMonitor(tpsMon)
+	_ = st.RecordTPSSamples([]statestore.TPSSample{
+		{
+			ConversationID: "conv-ui",
+			StepIndex:      2,
+			CreatedAtUnix:  time.Now().Unix() - 20,
+			PoolID:         "gemini",
+			Model:          "gemini-4-neon",
+			ModelDisplay:   "Gemini 4 Neon (High)",
+			OutputTokens:   1500,
+			TTFTMs:         5000,
+			StreamingMs:    10000,
+		},
+	})
 
 	uiSrv := New(hub, filepath.Join(tmp, "config.json"), "secret_ui_tok")
 	ts := httptest.NewServer(uiSrv.Handler())
 	defer ts.Close()
 
-	// GET / returns HTML page
+	// GET / returns HTML page with TPS monitoring card
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET / failed: status=%d err=%v", resp.StatusCode, err)
+	}
+	htmlBytes, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(htmlBytes), "输出速度监控 (TPS · 5h)") {
+		t.Fatalf("expected Sidecar HTML to contain TPS monitor card")
+	}
+
+	// GET /api/status returns live TPS snapshot
+	stResp, err := http.Get(ts.URL + "/api/status")
+	if err != nil || stResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/status failed: status=%d err=%v", stResp.StatusCode, err)
+	}
+	var stBody struct {
+		TPS *tpsmonitor.TPSSnapshot `json:"tps"`
+	}
+	if err := json.NewDecoder(stResp.Body).Decode(&stBody); err != nil {
+		t.Fatalf("decode /api/status: %v", err)
+	}
+	_ = stResp.Body.Close()
+	if stBody.TPS == nil || stBody.TPS.StreamTPS != 150.0 || stBody.TPS.E2ETPS != 100.0 || len(stBody.TPS.Models) != 1 {
+		t.Fatalf("unexpected TPS payload in /api/status: %+v", stBody.TPS)
 	}
 
 	// POST without sidecar token rejected with 401

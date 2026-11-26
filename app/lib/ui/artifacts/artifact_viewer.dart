@@ -5,7 +5,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../state/app_state.dart';
-import '../../theme/levity_theme.dart';
+import '../../theme/agy_theme.dart';
 
 /// Opens a modal bottom sheet listing all artifacts in the conversation's brain directory.
 Future<void> showArtifactsDrawer(
@@ -15,10 +15,11 @@ Future<void> showArtifactsDrawer(
 }) {
   return showModalBottomSheet<void>(
     context: context,
-    backgroundColor: const Color(0xFF15172A),
+    backgroundColor: AgyColors.bgDock,
     isScrollControlled: true,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      side: BorderSide(color: AgyColors.borderStrong),
     ),
     builder: (ctx) {
       return DraggableScrollableSheet(
@@ -31,36 +32,37 @@ Future<void> showArtifactsDrawer(
             children: [
               const SizedBox(height: 10),
               Container(
-                width: 40,
+                width: 36,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: const Color(0x44FFFFFF),
+                  color: AgyColors.borderStrong,
                   borderRadius: BorderRadius.circular(999),
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 10),
                 child: Row(
                   children: [
-                    const Icon(Icons.description_outlined, size: 18, color: LevityColors.purpleSubagent),
+                    const Icon(Icons.description_outlined, size: 18, color: AgyColors.accentBright),
                     const SizedBox(width: 8),
                     Text('会话产物 (${artifacts.length})', style: Theme.of(ctx).textTheme.titleMedium),
                   ],
                 ),
               ),
+              const Divider(height: 1, color: AgyColors.borderHairline),
               Expanded(
                 child: artifacts.isEmpty
-                    ? const Center(child: Text('该会话暂无产物文件', style: TextStyle(color: LevityColors.textMuted)))
+                    ? const Center(child: Text('该会话暂无产物文件', style: TextStyle(color: AgyColors.textMuted)))
                     : ListView.separated(
                         controller: scrollCtrl,
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                         itemCount: artifacts.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 8),
                         itemBuilder: (ctx, idx) {
                           final item = artifacts[idx];
-                          return GlassCard(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                            borderRadius: 16,
+                          return ConsolePanel(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                            borderRadius: 10,
                             onTap: () {
                               Navigator.of(ctx).pop();
                               Navigator.of(context).push(
@@ -76,7 +78,16 @@ Future<void> showArtifactsDrawer(
                             },
                             child: Row(
                               children: [
-                                Icon(_iconForKind(item.kind), size: 20, color: LevityColors.purpleSubagent),
+                                Container(
+                                  width: 34,
+                                  height: 34,
+                                  decoration: BoxDecoration(
+                                    color: AgyColors.bgSubtle,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: AgyColors.borderHairline),
+                                  ),
+                                  child: Icon(_iconForKind(item.kind), size: 18, color: AgyColors.accentBright),
+                                ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
@@ -86,19 +97,28 @@ Future<void> showArtifactsDrawer(
                                         item.name,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: LevityColors.textPrimary),
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          color: AgyColors.textPrimary,
+                                        ),
                                       ),
                                       const SizedBox(height: 3),
                                       Text(
                                         '${item.relPath} · ${_formatSize(item.sizeBytes)}',
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 11.5, color: LevityColors.textMuted),
+                                        style: const TextStyle(
+                                          fontSize: 11.5,
+                                          fontFamily: 'monospace',
+                                          fontFeatures: kTabularFigures,
+                                          color: AgyColors.textMuted,
+                                        ),
                                       ),
                                     ],
                                   ),
                                 ),
-                                const Icon(Icons.chevron_right_rounded, color: LevityColors.textMuted),
+                                const Icon(Icons.chevron_right_rounded, color: AgyColors.textMuted),
                               ],
                             ),
                           );
@@ -222,33 +242,42 @@ class _ArtifactViewerPageState extends ConsumerState<ArtifactViewerPage> {
 
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 0,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.displayName, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+            Text(widget.displayName, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700)),
             Text(
               widget.path,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11, color: LevityColors.textMuted),
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: AgyColors.textMuted),
             ),
           ],
         ),
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(1),
+          child: Divider(height: 1, thickness: 1, color: AgyColors.borderHairline),
+        ),
         actions: [
           if (!_isImageHint && _accumulated.isNotEmpty)
-            IconButton(
-              tooltip: '复制内容',
-              icon: const Icon(Icons.copy_rounded, size: 20),
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: _accumulated));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已复制文件内容')),
-                );
-              },
+            Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: AgyIconAction(
+                tooltip: '复制内容',
+                icon: Icons.copy_rounded,
+                size: 34,
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: _accumulated));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已复制文件内容')),
+                  );
+                },
+              ),
             ),
         ],
       ),
-      body: LevityBackground(
+      body: AgyCanvas(
         child: _isImageHint && carrier != null
             ? Center(
                 child: InteractiveViewer(
@@ -259,23 +288,24 @@ class _ArtifactViewerPageState extends ConsumerState<ArtifactViewerPage> {
                     headers: {'Authorization': 'Bearer ${carrier.token}'},
                     loadingBuilder: (ctx, child, progress) {
                       if (progress == null) return child;
-                      return const CircularProgressIndicator();
+                      return const CircularProgressIndicator(color: AgyColors.accentBright);
                     },
                     errorBuilder: (ctx, err, _) => Padding(
                       padding: const EdgeInsets.all(24),
-                      child: Text('图片加载失败：$err', style: const TextStyle(color: LevityColors.orangeWarning)),
+                      child: Text('图片加载失败：$err', style: const TextStyle(color: AgyColors.warning)),
                     ),
                   ),
                 ),
               )
             : _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: CircularProgressIndicator(color: AgyColors.accentBright, strokeWidth: 2.2))
                 : _error != null
                     ? Center(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
-                          child: GlassCard(
-                            child: Text(_error!, style: const TextStyle(color: LevityColors.orangeWarning)),
+                          child: ConsolePanel(
+                            accentStripeColor: AgyColors.warning,
+                            child: Text(_error!, style: const TextStyle(color: AgyColors.warning)),
                           ),
                         ),
                       )
@@ -295,17 +325,18 @@ class _ArtifactViewerPageState extends ConsumerState<ArtifactViewerPage> {
                   selectable: true,
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                   styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                    p: const TextStyle(fontSize: 14.5, height: 1.55, color: LevityColors.textPrimary),
+                    p: const TextStyle(fontSize: 14.5, height: 1.56, color: AgyColors.textPrimary),
+                    a: const TextStyle(color: AgyColors.info, decoration: TextDecoration.underline),
                     code: const TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12.5,
-                      color: Color(0xFFC4B5FD),
-                      backgroundColor: Color(0x332D2F4A),
+                      color: AgyColors.accentBright,
+                      backgroundColor: AgyColors.bgSubtle,
                     ),
                     codeblockDecoration: BoxDecoration(
-                      color: const Color(0xCC111322),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: LevityColors.cardBorder),
+                      color: AgyColors.bgCodeBlock,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AgyColors.borderHairline),
                     ),
                   ),
                 )
@@ -319,7 +350,7 @@ class _ArtifactViewerPageState extends ConsumerState<ArtifactViewerPage> {
                         fontFamily: 'monospace',
                         fontSize: 12.5,
                         height: 1.5,
-                        color: LevityColors.textPrimary,
+                        color: AgyColors.textPrimary,
                       ),
                     ),
                   ),

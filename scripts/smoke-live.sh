@@ -49,6 +49,14 @@ if desktop_online:
     assert all(p.get("source") == "direct" for p in pools), f"expected direct quota source when desktopOnline=true: {pools}"
 print(f"[PASS] quota.get: tier={qdata['subscriptionTier']} pools={[(p['poolId'], p['remaining5hPct'], p['source']) for p in pools]}")
 
+# 3b. Output speed (TPS) RPC
+st, tresp = req_json("POST", "/api/v1/rpc", {"requestId": "smoke_tps", "method": "tps.get", "params": {"refresh": True}})
+assert st == 200 and tresp.get("ok") is True, f"tps.get failed: {tresp}"
+tdata = tresp["data"]
+assert tdata.get("windowSeconds") == 18000, f"unexpected tps windowSeconds: {tdata}"
+assert isinstance(tdata.get("models"), list), f"missing models list in tps.get: {tdata}"
+print(f"[PASS] tps.get: samples={tdata.get('sampleCount')} streamTps={tdata.get('streamTps')} e2eTps={tdata.get('e2eTps')} avgTtftMs={tdata.get('avgTtftMs')} models={len(tdata.get('models') or [])}")
+
 # 4. Sessions list & FTS search
 st, sresp = req_json("POST", "/api/v1/rpc", {"requestId": "smoke_list", "method": "sessions.list", "params": {"mode": "desktop", "limit": 5}})
 assert st == 200 and sresp.get("ok") is True, f"sessions.list failed: {sresp}"

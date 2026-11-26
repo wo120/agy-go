@@ -1,7 +1,7 @@
 import 'package:agy_client/agy_client.dart';
 import 'package:flutter/material.dart';
 
-import '../../theme/levity_theme.dart';
+import '../../theme/agy_theme.dart';
 
 typedef CreateSessionSubmit = Future<void> Function({
   required String prompt,
@@ -93,10 +93,6 @@ class NewSessionSheet extends StatefulWidget {
 }
 
 class _NewSessionSheetState extends State<NewSessionSheet> {
-  static const _surfaceField = Color(0xFF1A1D33);
-  static const _surfaceDropdown = Color(0xFF1D2038);
-  static const _fieldBorder = Color(0x1EFFFFFF);
-
   final _promptCtrl = TextEditingController();
   final _titleCtrl = TextEditingController();
 
@@ -228,24 +224,24 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
     return ws.label;
   }
 
-  InputDecoration _glassInputDecoration({required String hintText, EdgeInsetsGeometry? contentPadding}) {
+  InputDecoration _consoleInputDecoration({required String hintText, EdgeInsetsGeometry? contentPadding}) {
     return InputDecoration(
       hintText: hintText,
-      hintStyle: const TextStyle(color: LevityColors.textMuted, fontSize: 14),
+      hintStyle: const TextStyle(color: AgyColors.textMuted, fontSize: 14),
       filled: true,
-      fillColor: _surfaceField,
-      contentPadding: contentPadding ?? const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      fillColor: AgyColors.bgSubtle,
+      contentPadding: contentPadding ?? const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: _fieldBorder, width: 1),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: AgyColors.borderHairline, width: 1),
       ),
       disabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: Color(0x12FFFFFF), width: 1),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: AgyColors.borderHairline, width: 1),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: LevityColors.purpleSubagent, width: 1.2),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: const BorderSide(color: AgyColors.accent, width: 1.2),
       ),
     );
   }
@@ -266,18 +262,14 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
 
     return Container(
       decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF1A1B32), Color(0xFF101222)],
-        ),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        border: Border(top: BorderSide(color: Color(0x28FFFFFF), width: 1)),
+        color: AgyColors.bgDock,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        border: Border(top: BorderSide(color: AgyColors.borderStrong, width: 1)),
       ),
       child: SafeArea(
         top: false,
         child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(20, 10, 20, MediaQuery.of(context).viewInsets.bottom + 22),
+          padding: EdgeInsets.fromLTRB(20, 10, 20, MediaQuery.of(context).viewInsets.bottom + 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -285,31 +277,31 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
               // Drag handle
               Center(
                 child: Container(
-                  width: 38,
+                  width: 36,
                   height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
+                  margin: const EdgeInsets.only(bottom: 14),
                   decoration: BoxDecoration(
-                    color: const Color(0x38FFFFFF),
+                    color: AgyColors.borderStrong,
                     borderRadius: BorderRadius.circular(99),
                   ),
                 ),
               ),
 
-              // Header with icon badge & close button
+              // Header
               Row(
                 children: [
                   Container(
                     width: 34,
                     height: 34,
                     decoration: BoxDecoration(
-                      color: const Color(0x2AA78BFA),
-                      borderRadius: BorderRadius.circular(11),
-                      border: Border.all(color: const Color(0x45A78BFA), width: 1),
+                      color: AgyColors.accentTint,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AgyColors.borderAccent, width: 1),
                     ),
                     child: const Icon(
-                      Icons.auto_awesome_rounded,
+                      Icons.terminal_rounded,
                       size: 18,
-                      color: LevityColors.purpleSubagent,
+                      color: AgyColors.accentBright,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -320,57 +312,48 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                         Text(
                           '发起新的 Antigravity 对话',
                           style: TextStyle(
-                            fontSize: 16,
+                            fontSize: 15.5,
                             fontWeight: FontWeight.w700,
-                            color: LevityColors.textPrimary,
-                            letterSpacing: 0.1,
+                            color: AgyColors.textPrimary,
+                            letterSpacing: -0.2,
                           ),
                         ),
                         SizedBox(height: 2),
                         Text(
                           '选择工作区与模型，直接发送至 Mac 执行',
-                          style: TextStyle(fontSize: 11.5, color: LevityColors.textMuted),
+                          style: TextStyle(fontSize: 11.5, color: AgyColors.textMuted),
                         ),
                       ],
                     ),
                   ),
                   if (Navigator.of(context).canPop())
-                    InkWell(
-                      onTap: _submitting ? null : () => Navigator.of(context).pop(),
-                      borderRadius: BorderRadius.circular(18),
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: LevityColors.capsuleFill,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: LevityColors.cardBorder, width: 1),
-                        ),
-                        child: const Icon(
-                          Icons.close_rounded,
-                          size: 17,
-                          color: LevityColors.textSecondary,
-                        ),
-                      ),
+                    AgyIconAction(
+                      icon: Icons.close_rounded,
+                      tooltip: '关闭',
+                      size: 32,
+                      color: AgyColors.textSecondary,
+                      onTap: () {
+                        if (!_submitting) Navigator.of(context).pop();
+                      },
                     ),
                 ],
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
 
               // Section 1: Workspace
               const _SectionLabel(text: '目标工作区'),
-              const SizedBox(height: 7),
-              _GlassFieldBox(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              const SizedBox(height: 6),
+              _ConsoleFieldBox(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String?>(
                     value: activeWorkspace,
                     isExpanded: true,
-                    dropdownColor: _surfaceDropdown,
-                    borderRadius: BorderRadius.circular(16),
+                    dropdownColor: AgyColors.bgElevated,
+                    borderRadius: BorderRadius.circular(12),
                     icon: const Icon(
                       Icons.keyboard_arrow_down_rounded,
-                      color: LevityColors.textSecondary,
+                      color: AgyColors.textSecondary,
                       size: 20,
                     ),
                     items: [
@@ -378,13 +361,13 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                         value: null,
                         child: Row(
                           children: [
-                            Icon(Icons.public_rounded, size: 17, color: LevityColors.blueUnread),
+                            Icon(Icons.public_rounded, size: 16, color: AgyColors.info),
                             SizedBox(width: 10),
                             Expanded(
                               child: Text(
                                 '通用对话（无代码库）',
                                 overflow: TextOverflow.ellipsis,
-                                style: TextStyle(fontSize: 14, color: LevityColors.textPrimary),
+                                style: TextStyle(fontSize: 14, color: AgyColors.textPrimary),
                               ),
                             ),
                           ],
@@ -395,13 +378,13 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                           value: ws.rootPath,
                           child: Row(
                             children: [
-                              const Icon(Icons.folder_outlined, size: 17, color: LevityColors.textSecondary),
+                              const Icon(Icons.folder_outlined, size: 16, color: AgyColors.accentBright),
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
                                   _workspaceDisplayName(ws, labelCounts),
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 14, color: LevityColors.textPrimary),
+                                  style: const TextStyle(fontSize: 14, color: AgyColors.textPrimary),
                                 ),
                               ),
                             ],
@@ -414,50 +397,38 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
               ),
               const SizedBox(height: 14),
 
-              // Section 2: Unified Model + Effort Card
+              // Section 2: Model + Effort selector
               Row(
                 children: [
                   const _SectionLabel(text: '模型与档位'),
                   const Spacer(),
                   Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
-                      decoration: BoxDecoration(
-                        color: const Color(0x14FFFFFF),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _selectedModelId,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          fontFamily: 'monospace',
-                          color: LevityColors.textSecondary,
-                        ),
-                      ),
+                    child: AgyTag(
+                      label: _selectedModelId,
+                      monospace: true,
+                      color: AgyColors.textSecondary,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 7),
-              _GlassFieldBox(
+              const SizedBox(height: 6),
+              _ConsoleFieldBox(
                 padding: EdgeInsets.zero,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           key: ValueKey('${family.familyName}_${_families.length}'),
                           value: family.familyName,
                           isExpanded: true,
-                          dropdownColor: _surfaceDropdown,
-                          borderRadius: BorderRadius.circular(16),
+                          dropdownColor: AgyColors.bgElevated,
+                          borderRadius: BorderRadius.circular(12),
                           icon: const Icon(
                             Icons.keyboard_arrow_down_rounded,
-                            color: LevityColors.textSecondary,
+                            color: AgyColors.textSecondary,
                             size: 20,
                           ),
                           items: [
@@ -467,22 +438,13 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                                 child: Row(
                                   children: [
                                     Container(
-                                      width: 8,
-                                      height: 8,
+                                      width: 7,
+                                      height: 7,
                                       decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
+                                        borderRadius: BorderRadius.circular(2),
                                         color: fam.poolId == 'claude_gpt'
-                                            ? LevityColors.purpleSubagent
-                                            : LevityColors.blueUnread,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: (fam.poolId == 'claude_gpt'
-                                                    ? LevityColors.purpleSubagent
-                                                    : LevityColors.blueUnread)
-                                                .withValues(alpha: 0.45),
-                                            blurRadius: 6,
-                                          ),
-                                        ],
+                                            ? AgyColors.accentBright
+                                            : AgyColors.info,
                                       ),
                                     ),
                                     const SizedBox(width: 10),
@@ -493,7 +455,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                                         style: const TextStyle(
                                           fontSize: 14,
                                           fontWeight: FontWeight.w500,
-                                          color: LevityColors.textPrimary,
+                                          color: AgyColors.textPrimary,
                                         ),
                                       ),
                                     ),
@@ -514,9 +476,9 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                       ),
                     ),
                     if (hasVariants) ...[
-                      const Divider(height: 1, thickness: 1, color: Color(0x14FFFFFF)),
+                      const Divider(height: 1, thickness: 1, color: AgyColors.borderHairline),
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 11),
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                         child: Wrap(
                           spacing: 8,
                           runSpacing: 8,
@@ -543,12 +505,12 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                 const SizedBox(height: 6),
                 const Text(
                   '未拉取到桌面端模型列表，已回退为基础档位',
-                  style: TextStyle(fontSize: 11, color: LevityColors.textMuted),
+                  style: TextStyle(fontSize: 11, color: AgyColors.textMuted),
                 ),
               ],
               const SizedBox(height: 14),
 
-              // Section 3: Prompt + Collapsible Optional Title
+              // Section 3: Prompt + Optional Title
               Row(
                 children: [
                   const _SectionLabel(text: '指令或需求'),
@@ -557,7 +519,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                     onTap: _submitting
                         ? null
                         : () => setState(() => _showTitleField = !_showTitleField),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                       child: Row(
@@ -566,15 +528,15 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                           Icon(
                             _showTitleField ? Icons.remove_rounded : Icons.add_rounded,
                             size: 14,
-                            color: LevityColors.purpleSubagent,
+                            color: AgyColors.accentBright,
                           ),
                           const SizedBox(width: 3),
                           Text(
                             _showTitleField ? '收起标题' : '自定义标题',
                             style: const TextStyle(
                               fontSize: 11.5,
-                              fontWeight: FontWeight.w500,
-                              color: LevityColors.purpleSubagent,
+                              fontWeight: FontWeight.w600,
+                              color: AgyColors.accentBright,
                             ),
                           ),
                         ],
@@ -588,19 +550,19 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                 curve: Curves.easeOutCubic,
                 child: _showTitleField
                     ? Padding(
-                        padding: const EdgeInsets.only(top: 7, bottom: 9),
+                        padding: const EdgeInsets.only(top: 6, bottom: 8),
                         child: TextField(
                           key: const Key('new_session_title_field'),
                           controller: _titleCtrl,
                           enabled: !_submitting,
-                          style: const TextStyle(fontSize: 14, color: LevityColors.textPrimary),
-                          decoration: _glassInputDecoration(
+                          style: const TextStyle(fontSize: 14, color: AgyColors.textPrimary),
+                          decoration: _consoleInputDecoration(
                             hintText: '对话标题（可选，留空自动生成）',
                             contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
                           ),
                         ),
                       )
-                    : const SizedBox(height: 7),
+                    : const SizedBox(height: 6),
               ),
               TextField(
                 key: const Key('new_session_prompt_field'),
@@ -608,9 +570,9 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                 enabled: !_submitting,
                 minLines: 3,
                 maxLines: 6,
-                style: const TextStyle(fontSize: 14, height: 1.45, color: LevityColors.textPrimary),
+                style: const TextStyle(fontSize: 14, height: 1.45, color: AgyColors.textPrimary),
                 onChanged: (_) => setState(() {}),
-                decoration: _glassInputDecoration(
+                decoration: _consoleInputDecoration(
                   hintText: '输入指令或需求，交由 Mac 端执行…',
                 ),
               ),
@@ -620,9 +582,9 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                   decoration: BoxDecoration(
-                    color: const Color(0x26F87171),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0x55F87171)),
+                    color: AgyColors.dangerTint,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AgyColors.danger.withValues(alpha: 0.45)),
                   ),
                   child: Text(
                     _errorText!,
@@ -630,86 +592,42 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
                   ),
                 ),
               ],
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
 
-              // Primary CTA button
+              // Primary CTA button (crisp solid emerald-teal)
               SizedBox(
                 width: double.infinity,
-                height: 48,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: canSubmit
-                        ? const LinearGradient(
-                            colors: [Color(0xFF8B6BFF), Color(0xFF5D7DFB)],
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                          )
-                        : null,
-                    color: canSubmit ? null : const Color(0xFF23263E),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: canSubmit ? const Color(0x45FFFFFF) : const Color(0x16FFFFFF),
-                      width: 1,
-                    ),
-                    boxShadow: canSubmit
-                        ? const [
-                            BoxShadow(
-                              color: Color(0x407C5CFF),
-                              blurRadius: 16,
-                              offset: Offset(0, 6),
+                height: 46,
+                child: FilledButton(
+                  onPressed: canSubmit ? _handleSubmit : null,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AgyColors.accent,
+                    foregroundColor: AgyColors.textOnAccent,
+                    disabledBackgroundColor: AgyColors.bgSubtle,
+                    disabledForegroundColor: AgyColors.textMuted,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: _submitting
+                      ? const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: AgyColors.textOnAccent),
                             ),
-                          ]
-                        : null,
-                  ),
-                  child: Material(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(16),
-                    child: InkWell(
-                      onTap: canSubmit ? _handleSubmit : null,
-                      borderRadius: BorderRadius.circular(16),
-                      child: Center(
-                        child: _submitting
-                            ? const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    '正在发送到 Mac…',
-                                    style: TextStyle(
-                                      fontSize: 14.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.arrow_upward_rounded,
-                                    size: 18,
-                                    color: canSubmit ? Colors.white : LevityColors.textMuted,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '发送到 Mac 执行',
-                                    style: TextStyle(
-                                      fontSize: 14.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: canSubmit ? Colors.white : LevityColors.textMuted,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      ),
-                    ),
-                  ),
+                            SizedBox(width: 8),
+                            Text('正在发送到 Mac…', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700)),
+                          ],
+                        )
+                      : const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.arrow_upward_rounded, size: 18),
+                            SizedBox(width: 6),
+                            Text('发送到 Mac 执行', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700)),
+                          ],
+                        ),
                 ),
               ),
             ],
@@ -731,18 +649,18 @@ class _SectionLabel extends StatelessWidget {
       text,
       style: const TextStyle(
         fontSize: 12,
-        fontWeight: FontWeight.w500,
-        color: LevityColors.textSecondary,
-        letterSpacing: 0.2,
+        fontWeight: FontWeight.w600,
+        color: AgyColors.textSecondary,
+        letterSpacing: 0.1,
       ),
     );
   }
 }
 
-class _GlassFieldBox extends StatelessWidget {
-  const _GlassFieldBox({
+class _ConsoleFieldBox extends StatelessWidget {
+  const _ConsoleFieldBox({
     required this.child,
-    this.padding = const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
   });
 
   final Widget child;
@@ -754,9 +672,9 @@ class _GlassFieldBox extends StatelessWidget {
       width: double.infinity,
       padding: padding,
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1D33),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1EFFFFFF), width: 1),
+        color: AgyColors.bgSubtle,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AgyColors.borderHairline, width: 1),
       ),
       child: child,
     );
@@ -778,15 +696,15 @@ class _EffortPill extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(8),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? const Color(0x3AA78BFA) : const Color(0x14FFFFFF),
-          borderRadius: BorderRadius.circular(16),
+          color: selected ? AgyColors.accentTint : AgyColors.bgElevated,
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: selected ? LevityColors.purpleSubagent : const Color(0x18FFFFFF),
+            color: selected ? AgyColors.accentBright : AgyColors.borderHairline,
             width: 1,
           ),
         ),
@@ -794,8 +712,8 @@ class _EffortPill extends StatelessWidget {
           label,
           style: TextStyle(
             fontSize: 12.5,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? LevityColors.textPrimary : LevityColors.textSecondary,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? AgyColors.accentBright : AgyColors.textSecondary,
           ),
         ),
       ),
@@ -814,24 +732,24 @@ class _ModelTagBadge extends StatelessWidget {
     final Color fg;
     final Color bg;
     if (lower.contains('leaving')) {
-      fg = LevityColors.orangeWarning;
-      bg = const Color(0x26F59E0B);
+      fg = AgyColors.warning;
+      bg = AgyColors.warningTint;
     } else if (lower == 'new') {
-      fg = LevityColors.greenDirect;
-      bg = const Color(0x2434D399);
+      fg = AgyColors.online;
+      bg = AgyColors.onlineTint;
     } else {
-      fg = LevityColors.textSecondary;
-      bg = const Color(0x249EA4BA);
+      fg = AgyColors.textSecondary;
+      bg = AgyColors.bgActive;
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(5),
       ),
       child: Text(
         tag,
-        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: fg),
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: fg),
       ),
     );
   }

@@ -20,11 +20,13 @@ class UserMessageRow extends ChatRow {
     required this.stepIndex,
     required this.content,
     required this.createdAtUnix,
+    this.metadata = '',
   }) : super(keyId);
 
   final int stepIndex;
   final String content;
   final int createdAtUnix;
+  final String metadata;
 }
 
 class ProcessStepSummary {
@@ -32,11 +34,19 @@ class ProcessStepSummary {
     required this.stepIndex,
     this.thinking = '',
     this.toolNames = const [],
+    this.outputTokens = 0,
+    this.ttftMs = 0,
+    this.streamTps = 0,
+    this.e2eTps = 0,
   });
 
   final int stepIndex;
   final String thinking;
   final List<String> toolNames;
+  final int outputTokens;
+  final int ttftMs;
+  final double streamTps;
+  final double e2eTps;
 }
 
 /// Collapsed single-line capsule representing consecutive thinking and tool calls.
@@ -73,6 +83,11 @@ class AssistantMessageRow extends ChatRow {
     required this.content,
     required this.createdAtUnix,
     this.modelDisplay = '',
+    this.outputTokens = 0,
+    this.ttftMs = 0,
+    this.streamingMs = 0,
+    this.streamTps = 0,
+    this.e2eTps = 0,
     this.fileLinks = const [],
   }) : super(keyId);
 
@@ -80,7 +95,14 @@ class AssistantMessageRow extends ChatRow {
   final String content;
   final int createdAtUnix;
   final String modelDisplay;
+  final int outputTokens;
+  final int ttftMs;
+  final int streamingMs;
+  final double streamTps;
+  final double e2eTps;
   final List<LocalFileLink> fileLinks;
+
+  bool get hasSpeedTelemetry => streamTps > 0 || e2eTps > 0;
 }
 
 class DecisionQuestion {
@@ -155,14 +177,17 @@ class TranscriptReducer {
     for (final step in steps) {
       if (step.type == 'USER_INPUT') {
         flushProcess();
-        final text = step.content.trim();
-        if (text.isNotEmpty) {
+        final parsed = parseUserInputContent(step.content);
+        final meta = step.userMetadata.trim().isNotEmpty ? step.userMetadata.trim() : parsed.metadata;
+        final ts = step.createdAtUnix > 0 ? step.createdAtUnix : (parsed.localTimeUnix ?? 0);
+        if (parsed.text.isNotEmpty) {
           rows.add(
             UserMessageRow(
               keyId: 'user_${step.stepIndex}',
               stepIndex: step.stepIndex,
-              content: text,
-              createdAtUnix: step.createdAtUnix,
+              content: parsed.text,
+              createdAtUnix: ts,
+              metadata: meta,
             ),
           );
         }
@@ -200,6 +225,10 @@ class TranscriptReducer {
               stepIndex: step.stepIndex,
               thinking: step.thinking.trim(),
               toolNames: nonQuestionTools,
+              outputTokens: step.outputTokens,
+              ttftMs: step.ttftMs,
+              streamTps: step.streamTps,
+              e2eTps: step.e2eTps,
             ),
           );
         }
@@ -214,6 +243,11 @@ class TranscriptReducer {
               content: visibleContent,
               createdAtUnix: step.createdAtUnix,
               modelDisplay: step.modelDisplay,
+              outputTokens: step.outputTokens,
+              ttftMs: step.ttftMs,
+              streamingMs: step.streamingMs,
+              streamTps: step.streamTps,
+              e2eTps: step.e2eTps,
               fileLinks: extractFileLinks(visibleContent),
             ),
           );
@@ -235,6 +269,78 @@ class TranscriptReducer {
     flushProcess();
     return rows;
   }
+
+  static const List<String> _userInputTrailingTags = [
+    'ADDITIONAL_METADATA',
+    'USER_SETTINGS_CHANGE',
+  ];
+
+  /// Extracts clean user message, preserved metadata blocks, and local timestamp
+  /// from Antigravity's wrapped USER_INPUT content while preserving nested tags.
+  static ({String text, String metadata, int? localTimeUnix}) parseUserInputContent(String content) {
+    final s = content.trim();
+    if (!s.startsWith('<USER_REQUEST>')) {
+      return (text: s, metadata: '', localTimeUnix: null);
+    }
+    var rest = s.substring('<USER_REQUEST>'.length);
+    final blocksReversed = <String>[];
+    int? localTimeUnix;
+
+    while (true) {
+      final trimmed = rest.trim();
+      var stripped = false;
+      for (final tag in _userInputTrailingTags) {
+        final closeTag = '</$tag>';
+        if (trimmed.endsWith(closeTag)) {
+          final openTag = '<$tag>';
+          final idx = trimmed.lastIndexOf(openTag);
+          if (idx >= 0) {
+            final inner = trimmed.substring(idx + openTag.length, trimmed.length - closeTag.length).trim();
+            if (inner.isNotEmpty) {
+              blocksReversed.add(inner);
+              localTimeUnix ??= _parseAdditionalMetadataTime(inner);
+            }
+            rest = trimmed.substring(0, idx);
+            stripped = true;
+            break;
+          }
+        }
+      }
+      if (!stripped) {
+        rest = trimmed;
+        break;
+      }
+    }
+    if (rest.endsWith('</USER_REQUEST>')) {
+      rest = rest.substring(0, rest.length - '</USER_REQUEST>'.length);
+    }
+    return (
+      text: rest.trim(),
+      metadata: blocksReversed.reversed.join('\n\n'),
+      localTimeUnix: localTimeUnix,
+    );
+  }
+
+  static int? _parseAdditionalMetadataTime(String meta) {
+    const prefix = 'The current local time is:';
+    for (final rawLine in meta.split('\n')) {
+      final line = rawLine.trim();
+      if (!line.startsWith(prefix)) continue;
+      var value = line.substring(prefix.length).trim();
+      if (value.endsWith('.')) {
+        value = value.substring(0, value.length - 1);
+      }
+      final dt = DateTime.tryParse(value);
+      if (dt != null) {
+        return dt.millisecondsSinceEpoch ~/ 1000;
+      }
+    }
+    return null;
+  }
+
+  /// Strips Antigravity's outer <USER_REQUEST> wrapper and trailing metadata tags
+  /// while preserving any nested tags pasted inside the user's actual message.
+  static String cleanUserInputContent(String content) => parseUserInputContent(content).text;
 
   static List<dynamic> _decodeJsonList(dynamic raw) {
     if (raw is List) return raw;

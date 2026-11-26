@@ -118,6 +118,54 @@ void main() {
       expect(dec.questions.first.options, ['(Recommended) 全部提交', '仅提交 README']);
       expect(dec.questions.first.multiSelect, isFalse);
     });
+
+    test('strips outer USER_REQUEST while preserving metadata and local send time', () {
+      const steps = [
+        TranscriptStep(
+          stepIndex: 0,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          createdAtUnix: 0,
+          content: '<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-25T02:59:10-05:00.\n</ADDITIONAL_METADATA>',
+        ),
+        TranscriptStep(
+          stepIndex: 1,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          createdAtUnix: 1001,
+          content: '<USER_REQUEST>\n显示：<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n02:59\n</ADDITIONAL_METADATA>\n修复这两个问题\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n03:39\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nchanged\n</USER_SETTINGS_CHANGE>',
+        ),
+        TranscriptStep(
+          stepIndex: 2,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          createdAtUnix: 1795597636,
+          content: '服务端已清洗',
+          userMetadata: 'The current local time is: 2026-11-25T04:07:16-05:00.',
+        ),
+      ];
+
+      final rows = TranscriptReducer.reduce(steps);
+      expect(rows.length, 3);
+      final r0 = rows[0] as UserMessageRow;
+      expect(r0.content, '先优化');
+      expect(r0.createdAtUnix, 1795593550);
+      expect(r0.metadata, 'The current local time is: 2026-11-25T02:59:10-05:00.');
+
+      final r1 = rows[1] as UserMessageRow;
+      expect(
+        r1.content,
+        '显示：<USER_REQUEST>\n先优化\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n02:59\n</ADDITIONAL_METADATA>\n修复这两个问题',
+      );
+      expect(r1.metadata, '03:39\n\nchanged');
+
+      final r2 = rows[2] as UserMessageRow;
+      expect(r2.content, '服务端已清洗');
+      expect(r2.metadata, 'The current local time is: 2026-11-25T04:07:16-05:00.');
+    });
     test('ModelOption parses familyName, variantName, and HostInfo models', () {
       final host = HostInfo.fromJson({
         'desktopOnline': true,
@@ -149,6 +197,78 @@ void main() {
       expect(host.models.last.familyName, 'Claude Opus 5.5');
       expect(host.models.last.variantName, 'Medium');
       expect(host.models.last.poolId, 'claude_gpt');
+    });
+
+    test('TpsSnapshot parses 5h metrics and TranscriptReducer propagates per-step speed telemetry', () {
+      final snap = TpsSnapshot.fromJson({
+        'updatedAt': 1795600000,
+        'windowSeconds': 18000,
+        'sampleCount': 12,
+        'streamSamples': 10,
+        'outputTokens': 15200,
+        'streamTps': 143.5,
+        'e2eTps': 78.2,
+        'avgTtftMs': 6400,
+        'latest': {
+          'conversationId': 'c-1',
+          'stepIndex': 8,
+          'createdAtUnix': 1795599990,
+          'poolId': 'gemini',
+          'model': 'gemini-4-neon',
+          'modelDisplay': 'Gemini 4 Neon (High)',
+          'outputTokens': 1600,
+          'ttftMs': 6200,
+          'streamingMs': 10500,
+          'streamTps': 152.4,
+          'e2eTps': 95.8,
+        },
+        'models': [
+          {
+            'model': 'gemini-4-neon',
+            'modelDisplay': 'Gemini 4 Neon (High)',
+            'poolId': 'gemini',
+            'sampleCount': 10,
+            'streamSamples': 8,
+            'outputTokens': 12000,
+            'streamTps': 148.0,
+            'e2eTps': 80.5,
+            'avgTtftMs': 6800,
+            'lastActiveUnix': 1795599990,
+          },
+        ],
+      });
+
+      expect(snap.hasData, isTrue);
+      expect(snap.streamTps, 143.5);
+      expect(snap.e2eTps, 78.2);
+      expect(snap.avgTtftMs, 6400);
+      expect(snap.latest?.modelDisplay, 'Gemini 4 Neon (High)');
+      expect(snap.latest?.streamTps, 152.4);
+      expect(snap.models.length, 1);
+      expect(snap.models.first.streamTps, 148.0);
+
+      final step = TranscriptStep.fromJson({
+        'step_index': 8,
+        'source': 'MODEL',
+        'type': 'PLANNER_RESPONSE',
+        'status': 'DONE',
+        'created_at_unix': 1795599990,
+        'model_display': 'Neon · High',
+        'content': '已实现 TPS 监控。',
+        'output_tokens': 1600,
+        'ttft_ms': 6200,
+        'streaming_ms': 10500,
+        'stream_tps': 152.4,
+        'e2e_tps': 95.8,
+      });
+      final rows = TranscriptReducer.reduce([step]);
+      expect(rows.length, 1);
+      final asst = rows.first as AssistantMessageRow;
+      expect(asst.hasSpeedTelemetry, isTrue);
+      expect(asst.streamTps, 152.4);
+      expect(asst.e2eTps, 95.8);
+      expect(asst.ttftMs, 6200);
+      expect(asst.outputTokens, 1600);
     });
   });
 

@@ -68,6 +68,21 @@ type WebhookEndpoint struct {
 	CreatedAt  int64  `json:"createdAt"`
 }
 
+// TPSSample persists exact millisecond generation telemetry for a completed planner turn.
+type TPSSample struct {
+	ConversationID string
+	StepIndex      int
+	CreatedAtUnix  int64
+	PoolID         string
+	Model          string
+	ModelDisplay   string
+	OutputTokens   int64
+	ThinkingTokens int64
+	ResponseTokens int64
+	TTFTMs         int64
+	StreamingMs    int64
+}
+
 // Open opens or initializes bridge_state.db with WAL mode enabled.
 func Open(dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
@@ -148,6 +163,28 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
 	auth_header TEXT NOT NULL DEFAULT '',
 	enabled INTEGER NOT NULL DEFAULT 1,
 	created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tps_samples (
+	conversation_id TEXT NOT NULL,
+	step_index INTEGER NOT NULL,
+	created_at_unix INTEGER NOT NULL,
+	pool_id TEXT NOT NULL,
+	model TEXT NOT NULL,
+	model_display TEXT NOT NULL,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	thinking_tokens INTEGER NOT NULL DEFAULT 0,
+	response_tokens INTEGER NOT NULL DEFAULT 0,
+	ttft_ms INTEGER NOT NULL DEFAULT 0,
+	streaming_ms INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (conversation_id, step_index)
+);
+CREATE INDEX IF NOT EXISTS idx_tps_samples_time ON tps_samples(created_at_unix DESC);
+
+CREATE TABLE IF NOT EXISTS tps_offsets (
+	conversation_id TEXT PRIMARY KEY,
+	metadata_offset INTEGER NOT NULL DEFAULT 0,
+	updated_at INTEGER NOT NULL DEFAULT 0
 );
 `
 	_, err := s.db.Exec(schema)
@@ -417,4 +454,170 @@ func (s *Store) ListEnabledWebhooks() ([]WebhookEndpoint, error) {
 		list = append(list, w)
 	}
 	return list, rows.Err()
+}
+
+// RecordTPSSamples upserts planner turn speed telemetry samples idempotently.
+func (s *Store) RecordTPSSamples(samples []TPSSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO tps_samples(
+			conversation_id, step_index, created_at_unix, pool_id, model, model_display,
+			output_tokens, thinking_tokens, response_tokens, ttft_ms, streaming_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(conversation_id, step_index) DO UPDATE SET
+			created_at_unix = excluded.created_at_unix,
+			pool_id = excluded.pool_id,
+			model = excluded.model,
+			model_display = excluded.model_display,
+			output_tokens = excluded.output_tokens,
+			thinking_tokens = excluded.thinking_tokens,
+			response_tokens = excluded.response_tokens,
+			ttft_ms = excluded.ttft_ms,
+			streaming_ms = excluded.streaming_ms
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, sm := range samples {
+		if _, err := stmt.Exec(
+			sm.ConversationID, sm.StepIndex, sm.CreatedAtUnix, sm.PoolID, sm.Model, sm.ModelDisplay,
+			sm.OutputTokens, sm.ThinkingTokens, sm.ResponseTokens, sm.TTFTMs, sm.StreamingMs,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetTPSOffset returns the consumed generatorMetadata offset for a conversation.
+func (s *Store) GetTPSOffset(convID string) (int, error) {
+	var offset int
+	err := s.db.QueryRow(`SELECT metadata_offset FROM tps_offsets WHERE conversation_id = ?`, convID).Scan(&offset)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return offset, err
+}
+
+// SetTPSOffset persists the latest consumed generatorMetadata offset for a conversation.
+func (s *Store) SetTPSOffset(convID string, offset int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO tps_offsets(conversation_id, metadata_offset, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(conversation_id) DO UPDATE SET
+			metadata_offset = excluded.metadata_offset,
+			updated_at = excluded.updated_at
+	`, convID, offset, time.Now().Unix())
+	return err
+}
+
+// LookupStepTimestamps returns step_index -> created_at_unix recorded in usage_ledger for convID.
+func (s *Store) LookupStepTimestamps(convID string) (map[int]int64, error) {
+	rows, err := s.db.Query(`SELECT step_index, created_at_unix FROM usage_ledger WHERE conversation_id = ?`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int]int64)
+	for rows.Next() {
+		var stepIdx int
+		var ts int64
+		if err := rows.Scan(&stepIdx, &ts); err != nil {
+			return nil, err
+		}
+		out[stepIdx] = ts
+	}
+	return out, rows.Err()
+}
+
+// QueryTPSSamplesSince returns TPS samples with created_at_unix >= sinceUnix ordered newest first.
+func (s *Store) QueryTPSSamplesSince(sinceUnix int64, limit int) ([]TPSSample, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	rows, err := s.db.Query(`
+		SELECT conversation_id, step_index, created_at_unix, pool_id, model, model_display,
+		       output_tokens, thinking_tokens, response_tokens, ttft_ms, streaming_ms
+		FROM tps_samples
+		WHERE created_at_unix >= ?
+		ORDER BY created_at_unix DESC, step_index DESC
+		LIMIT ?
+	`, sinceUnix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []TPSSample
+	for rows.Next() {
+		var sm TPSSample
+		if err := rows.Scan(
+			&sm.ConversationID, &sm.StepIndex, &sm.CreatedAtUnix, &sm.PoolID, &sm.Model, &sm.ModelDisplay,
+			&sm.OutputTokens, &sm.ThinkingTokens, &sm.ResponseTokens, &sm.TTFTMs, &sm.StreamingMs,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, sm)
+	}
+	return list, rows.Err()
+}
+
+// QueryLatestTPSSample returns the most recent persisted TPS sample across all conversations.
+func (s *Store) QueryLatestTPSSample() (*TPSSample, error) {
+	var sm TPSSample
+	err := s.db.QueryRow(`
+		SELECT conversation_id, step_index, created_at_unix, pool_id, model, model_display,
+		       output_tokens, thinking_tokens, response_tokens, ttft_ms, streaming_ms
+		FROM tps_samples
+		ORDER BY created_at_unix DESC, step_index DESC
+		LIMIT 1
+	`).Scan(
+		&sm.ConversationID, &sm.StepIndex, &sm.CreatedAtUnix, &sm.PoolID, &sm.Model, &sm.ModelDisplay,
+		&sm.OutputTokens, &sm.ThinkingTokens, &sm.ResponseTokens, &sm.TTFTMs, &sm.StreamingMs,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sm, nil
+}
+
+// QueryConversationTPSSamples returns step_index -> TPSSample for a single conversation.
+func (s *Store) QueryConversationTPSSamples(convID string) (map[int]TPSSample, error) {
+	rows, err := s.db.Query(`
+		SELECT conversation_id, step_index, created_at_unix, pool_id, model, model_display,
+		       output_tokens, thinking_tokens, response_tokens, ttft_ms, streaming_ms
+		FROM tps_samples
+		WHERE conversation_id = ?
+	`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int]TPSSample)
+	for rows.Next() {
+		var sm TPSSample
+		if err := rows.Scan(
+			&sm.ConversationID, &sm.StepIndex, &sm.CreatedAtUnix, &sm.PoolID, &sm.Model, &sm.ModelDisplay,
+			&sm.OutputTokens, &sm.ThinkingTokens, &sm.ResponseTokens, &sm.TTFTMs, &sm.StreamingMs,
+		); err != nil {
+			return nil, err
+		}
+		out[sm.StepIndex] = sm
+	}
+	return out, rows.Err()
 }

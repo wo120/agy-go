@@ -28,6 +28,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/sidecarui"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tpsmonitor"
 	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
 
@@ -116,6 +117,17 @@ func runStatus(cfg *config.Config) {
 	if err != nil {
 		log.Fatalf("read summaries: %v", err)
 	}
+	tps := tpsmonitor.NewMonitor(filepath.Join(cfg.AntigravityDir, "daemon"), store)
+	refs := make([]tpsmonitor.ConversationRef, 0, len(list))
+	for _, item := range list {
+		refs = append(refs, tpsmonitor.ConversationRef{
+			ConversationID:   item.ConversationID,
+			LastModifiedUnix: item.LastModifiedUnix,
+		})
+	}
+	tps.SyncRecent(context.Background(), refs)
+	tpsSnap, _ := tps.Snapshot(context.Background())
+
 	snap, err := quota.Snapshot(context.Background())
 	if err != nil {
 		log.Fatalf("quota snapshot: %v", err)
@@ -127,6 +139,7 @@ func runStatus(cfg *config.Config) {
 		"desktopOnline":  runner.IsDesktopOnline(),
 		"recentCount":    len(list),
 		"quota":          snap,
+		"tps":            tpsSnap,
 		"antigravityDir": cfg.AntigravityDir,
 	}, "", "  ")
 	fmt.Println(string(out))
@@ -165,6 +178,8 @@ func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 	})
 
 	srv = hubserver.New(cfg, store, reader, watcher, quota, runner, notif)
+	tps := tpsmonitor.NewMonitor(filepath.Join(cfg.AntigravityDir, "daemon"), store)
+	srv.SetTPSMonitor(tps)
 
 	tsHostname := cfg.TailscaleHostname
 	if strings.TrimSpace(tsHostname) == "" {
@@ -201,6 +216,18 @@ func runServe(cfg *config.Config, cfgPath string, sidecarMode bool) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		if raws, err := reader.ListRootSummaries(25); err == nil && len(raws) > 0 {
+			refs := make([]tpsmonitor.ConversationRef, 0, len(raws))
+			for _, r := range raws {
+				refs = append(refs, tpsmonitor.ConversationRef{
+					ConversationID:   r.ConversationID,
+					LastModifiedUnix: r.LastModifiedUnix,
+				})
+			}
+			tps.SyncRecent(ctx, refs)
+		}
+	}()
 	srv.StartStatePoller(ctx)
 
 	httpSrv := &http.Server{

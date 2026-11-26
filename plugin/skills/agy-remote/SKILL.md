@@ -9,7 +9,8 @@ description: Manage the agy-remote Antigravity mobile companion plugin — check
 - **Managed Sidecar (`sidecars/remote`)**: Starts automatically with Antigravity, listens on `0.0.0.0:8765` for the Android AGY Go app (LAN / Tailscale direct HTTP RPC + `/api/v1/mux` WebSocket), and renders the live QR Pairing & Quota dashboard inside Antigravity's Aux Pane.
 - **Lifecycle Hooks (`hooks.json`)**: Forwards `Stop` (task completion) and `PostToolUse(ask_question)` (decision confirmation) to connected mobile devices in milliseconds.
 - **MCP Tools (`agy-remote`)**:
-  - `agy_remote_status` — inspect bridge health, direct endpoints, desktop online state, and 5h/7d model quota snapshot.
+  - `agy_remote_status` — inspect bridge health, direct endpoints, desktop online state, 5h/7d model quota snapshot, and 5h output speed (TPS) summary.
+  - `agy_remote_tps` — inspect real-time and rolling 5h LLM output speed (Stream TPS, E2E TPS, average TTFT, latest turn, and per-model breakdown).
   - `agy_remote_pairing_info` — fetch pairing endpoints and JSON payload for the Android app.
   - `agy_remote_notify_mobile` — send a custom high-priority push notification (e.g., morning briefing, long task milestone, or confirmation prompt with quick replies) to connected Android devices.
 

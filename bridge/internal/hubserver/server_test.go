@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
@@ -22,6 +23,7 @@ import (
 	"github.com/antigravity-mobile/bridge/internal/notifier"
 	"github.com/antigravity-mobile/bridge/internal/quotamonitor"
 	"github.com/antigravity-mobile/bridge/internal/statestore"
+	"github.com/antigravity-mobile/bridge/internal/tpsmonitor"
 	"github.com/antigravity-mobile/bridge/internal/tsfunnel"
 )
 
@@ -112,6 +114,21 @@ func TestRPCFileSandboxAndMuxWS(t *testing.T) {
 	notif := notifier.NewManager(store)
 
 	srv := New(cfg, store, reader, watcher, quota, runner, notif)
+	tpsMon := tpsmonitor.NewMonitor(filepath.Join(agyDir, "daemon"), store)
+	srv.SetTPSMonitor(tpsMon)
+	_ = store.RecordTPSSamples([]statestore.TPSSample{
+		{
+			ConversationID: "conv-1",
+			StepIndex:      1,
+			CreatedAtUnix:  time.Now().Unix() - 30,
+			PoolID:         "gemini",
+			Model:          "gemini-4-neon",
+			ModelDisplay:   "Gemini 4 Neon (High)",
+			OutputTokens:   1200,
+			TTFTMs:         4000,
+			StreamingMs:    8000,
+		},
+	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -226,6 +243,33 @@ func TestRPCFileSandboxAndMuxWS(t *testing.T) {
 	}
 	if !sessOut.OK || len(sessOut.Data.Steps) != 1 || sessOut.Data.Steps[0].StepIndex != 1 {
 		t.Fatalf("expected 1 compacted visible step (index 1), got %+v", sessOut)
+	}
+	if sessOut.Data.Steps[0].StreamTPS != 150.0 || sessOut.Data.Steps[0].E2ETPS != 100.0 || sessOut.Data.Steps[0].TTFTMs != 4000 {
+		t.Fatalf("expected step 1 enriched with TPS/TTFT, got %+v", sessOut.Data.Steps[0])
+	}
+
+	// 5b. tps.get RPC returns 5h snapshot and latest turn
+	tpsBody, _ := json.Marshal(map[string]any{
+		"requestId": "r-tps",
+		"method":    "tps.get",
+		"params":    map[string]any{"refresh": false},
+	})
+	tpsReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/rpc", bytes.NewReader(tpsBody))
+	tpsReq.Header.Set("Authorization", "Bearer agy_live_testtoken")
+	tpsResp, err := http.DefaultClient.Do(tpsReq)
+	if err != nil {
+		t.Fatalf("tps.get req: %v", err)
+	}
+	defer tpsResp.Body.Close()
+	var tpsOut struct {
+		OK   bool                   `json:"ok"`
+		Data tpsmonitor.TPSSnapshot `json:"data"`
+	}
+	if err := json.NewDecoder(tpsResp.Body).Decode(&tpsOut); err != nil {
+		t.Fatalf("decode tps.get: %v", err)
+	}
+	if !tpsOut.OK || tpsOut.Data.StreamTPS != 150.0 || tpsOut.Data.E2ETPS != 100.0 || tpsOut.Data.Latest == nil {
+		t.Fatalf("unexpected tps.get output: %+v", tpsOut)
 	}
 
 	// 6. Attached TunnelProvider injects public Funnel HTTPS endpoint into pairing payload
