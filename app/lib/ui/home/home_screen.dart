@@ -820,6 +820,16 @@ class SessionSummaryCard extends StatelessWidget {
             runSpacing: 6,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              if (card.pendingInteractionCount > 0)
+                AgyTag(
+                  icon: Icons.verified_user_outlined,
+                  label: card.pendingInteractionCount > 1
+                      ? '待授权 ×${card.pendingInteractionCount}'
+                      : '待授权',
+                  color: AgyColors.warning,
+                  backgroundColor: AgyColors.warningTint,
+                  borderColor: AgyColors.warning.withValues(alpha: 0.45),
+                ),
               AgyTag(
                 icon: card.workspace.isGlobal ? Icons.public_rounded : Icons.folder_outlined,
                 label: card.workspace.label,

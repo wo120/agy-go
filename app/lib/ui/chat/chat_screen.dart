@@ -80,7 +80,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final chat = ref.watch(chatSessionProvider(widget.conversationId));
     final desktopOnline = ref.watch(hostConnectionProvider.select((h) => h.desktopOnline));
     final session = chat.session;
-    final needsConfirm = session?.needsConfirm == true;
+    final hasPendingInteraction = chat.pendingInteractions.isNotEmpty;
+    final needsConfirm = !hasPendingInteraction && session?.needsConfirm == true;
 
     return Scaffold(
       appBar: AppBar(
@@ -245,6 +246,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               },
                             ),
                 ),
+                if (hasPendingInteraction)
+                  _PendingInteractionDock(
+                    interactions: chat.pendingInteractions,
+                    submitting: chat.respondingInteraction,
+                    desktopOnline: desktopOnline,
+                    onRespondPermission: (interaction, {required bool allow, required String scope, String? feedback}) =>
+                        ref.read(chatSessionProvider(widget.conversationId).notifier).respondPermission(
+                              interaction,
+                              allow: allow,
+                              scope: scope,
+                              feedback: feedback,
+                            ),
+                    onRespondAskQuestion: (interaction, selectedOptionIds) => ref
+                        .read(chatSessionProvider(widget.conversationId).notifier)
+                        .respondAskQuestion(interaction, selectedOptionIds),
+                  ),
                 _buildComposer(desktopOnline, chat.sending),
               ],
             ),
@@ -872,6 +889,427 @@ class _OneHandFloatingDock extends StatelessWidget {
                 child: Icon(Icons.keyboard_double_arrow_down_rounded, size: 19, color: AgyColors.accentBright),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingInteractionDock extends StatefulWidget {
+  const _PendingInteractionDock({
+    required this.interactions,
+    required this.submitting,
+    required this.desktopOnline,
+    required this.onRespondPermission,
+    required this.onRespondAskQuestion,
+  });
+
+  final List<PendingInteraction> interactions;
+  final bool submitting;
+  final bool desktopOnline;
+  final Future<void> Function(
+    PendingInteraction interaction, {
+    required bool allow,
+    required String scope,
+    String? feedback,
+  }) onRespondPermission;
+  final Future<void> Function(
+    PendingInteraction interaction,
+    List<List<String>> selectedOptionIds,
+  ) onRespondAskQuestion;
+
+  @override
+  State<_PendingInteractionDock> createState() => _PendingInteractionDockState();
+}
+
+class _PendingInteractionDockState extends State<_PendingInteractionDock> {
+  bool _showDenyReason = false;
+  final TextEditingController _denyCtrl = TextEditingController();
+  int _lastStepIndex = -1;
+
+  @override
+  void dispose() {
+    _denyCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = widget.interactions.first;
+    if (_lastStepIndex != current.stepIndex) {
+      _lastStepIndex = current.stepIndex;
+      _showDenyReason = false;
+      _denyCtrl.clear();
+    }
+
+    final total = widget.interactions.length;
+    return Container(
+      key: const Key('pending_interaction_dock'),
+      width: double.infinity,
+      constraints: const BoxConstraints(maxHeight: 380),
+      decoration: BoxDecoration(
+        color: AgyColors.bgDock,
+        border: Border(
+          top: BorderSide(color: AgyColors.warning.withValues(alpha: 0.6), width: 1.2),
+        ),
+      ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: current.isPermission
+            ? _buildPermissionCard(current, total)
+            : current.isAskQuestion
+                ? _buildAskQuestionCard(current, total)
+                : const SizedBox.shrink(),
+      ),
+    );
+  }
+
+  Widget _buildPermissionCard(PendingInteraction interaction, int total) {
+    final perm = interaction.permission!;
+    final title = perm.actionDescription.isNotEmpty
+        ? '允许 ${perm.actionDescription}?'
+        : '允许执行 ${perm.actionLabel}?';
+    final pattern = perm.persistPattern;
+    final canPersist = perm.allowPersist && pattern.isNotEmpty;
+    final disabled = widget.submitting || !widget.desktopOnline;
+
+    return ConsolePanel(
+      padding: const EdgeInsets.all(12),
+      borderRadius: 12,
+      accentStripeColor: AgyColors.warning,
+      borderColor: AgyColors.warning.withValues(alpha: 0.45),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.verified_user_outlined, size: 16, color: AgyColors.warning),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13.8,
+                    fontWeight: FontWeight.w700,
+                    color: AgyColors.textPrimary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              AgyTag(
+                label: perm.actionLabel,
+                color: AgyColors.warning,
+                backgroundColor: AgyColors.warningTint,
+                borderColor: AgyColors.warning.withValues(alpha: 0.35),
+              ),
+              if (total > 1) ...[
+                const SizedBox(width: 6),
+                AgyTag(
+                  label: '1/$total',
+                  monospace: true,
+                  color: AgyColors.accentBright,
+                  backgroundColor: AgyColors.accentTint,
+                  borderColor: AgyColors.borderAccent,
+                ),
+              ],
+            ],
+          ),
+          if (perm.target.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: AgyColors.bgCodeBlock,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AgyColors.borderHairline),
+              ),
+              child: SelectableText(
+                perm.target,
+                style: const TextStyle(
+                  fontSize: 12.2,
+                  height: 1.4,
+                  fontFamily: 'monospace',
+                  color: AgyColors.accentBright,
+                ),
+              ),
+            ),
+          ],
+          if (perm.reason.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              perm.reason,
+              style: const TextStyle(fontSize: 12, height: 1.4, color: AgyColors.textSecondary),
+            ),
+          ],
+          if (!widget.desktopOnline) ...[
+            const SizedBox(height: 6),
+            const Text(
+              '桌面端当前离线，暂无法提交授权',
+              style: TextStyle(fontSize: 11.5, color: AgyColors.warning),
+            ),
+          ],
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              key: const Key('perm_allow_once_btn'),
+              onPressed: disabled
+                  ? null
+                  : () => widget.onRespondPermission(
+                        interaction,
+                        allow: true,
+                        scope: 'once',
+                      ),
+              style: FilledButton.styleFrom(
+                backgroundColor: AgyColors.online,
+                foregroundColor: AgyColors.bgCanvas,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              icon: widget.submitting
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AgyColors.bgCanvas),
+                    )
+                  : const Icon(Icons.check_rounded, size: 17),
+              label: const Text(
+                '允许这一次',
+                style: TextStyle(fontSize: 13.2, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          if (canPersist) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: const Key('perm_allow_conversation_btn'),
+                onPressed: disabled
+                    ? null
+                    : () => widget.onRespondPermission(
+                          interaction,
+                          allow: true,
+                          scope: 'conversation',
+                        ),
+                style: OutlinedButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                  backgroundColor: AgyColors.bgSubtle,
+                  side: const BorderSide(color: AgyColors.borderAccent),
+                  foregroundColor: AgyColors.textPrimary,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: Text(
+                  "本次会话始终允许 '$pattern'",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                key: const Key('perm_allow_global_btn'),
+                onPressed: disabled
+                    ? null
+                    : () => widget.onRespondPermission(
+                          interaction,
+                          allow: true,
+                          scope: 'global',
+                        ),
+                style: OutlinedButton.styleFrom(
+                  alignment: Alignment.centerLeft,
+                  backgroundColor: AgyColors.bgSubtle,
+                  side: const BorderSide(color: AgyColors.borderHairline),
+                  foregroundColor: AgyColors.textSecondary,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: Text(
+                  "始终允许 '$pattern'",
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('perm_deny_btn'),
+                  onPressed: disabled
+                      ? null
+                      : () => widget.onRespondPermission(
+                            interaction,
+                            allow: false,
+                            scope: 'once',
+                          ),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AgyColors.dangerTint,
+                    side: BorderSide(color: AgyColors.danger.withValues(alpha: 0.4)),
+                    foregroundColor: AgyColors.danger,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: const Icon(Icons.close_rounded, size: 15),
+                  label: const Text('拒绝', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: OutlinedButton.icon(
+                  key: const Key('perm_deny_with_reason_toggle'),
+                  onPressed: disabled
+                      ? null
+                      : () => setState(() => _showDenyReason = !_showDenyReason),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AgyColors.bgSubtle,
+                    side: const BorderSide(color: AgyColors.borderHairline),
+                    foregroundColor: AgyColors.textSecondary,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: Icon(
+                    _showDenyReason ? Icons.expand_less_rounded : Icons.edit_note_rounded,
+                    size: 16,
+                  ),
+                  label: const Text(
+                    '否，告诉 Agent 改做什么',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_showDenyReason) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('perm_deny_reason_input'),
+                    controller: _denyCtrl,
+                    style: const TextStyle(fontSize: 13, color: AgyColors.textPrimary),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: '输入替代指令（将先拒绝再发送给 Agent）...',
+                      hintStyle: const TextStyle(fontSize: 12, color: AgyColors.textMuted),
+                      filled: true,
+                      fillColor: AgyColors.bgSubtle,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AgyColors.borderHairline),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: const BorderSide(color: AgyColors.danger),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                FilledButton(
+                  key: const Key('perm_deny_reason_submit'),
+                  onPressed: disabled
+                      ? null
+                      : () => widget.onRespondPermission(
+                            interaction,
+                            allow: false,
+                            scope: 'once',
+                            feedback: _denyCtrl.text.trim(),
+                          ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AgyColors.danger,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('提交', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAskQuestionCard(PendingInteraction interaction, int total) {
+    final first = interaction.questions.first;
+    final disabled = widget.submitting || !widget.desktopOnline;
+    return ConsolePanel(
+      padding: const EdgeInsets.all(12),
+      borderRadius: 12,
+      accentStripeColor: AgyColors.warning,
+      borderColor: AgyColors.warning.withValues(alpha: 0.45),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.help_outline_rounded, size: 16, color: AgyColors.warning),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text(
+                  'Agent 等待你选择方案',
+                  style: TextStyle(fontSize: 13.2, fontWeight: FontWeight.w700, color: AgyColors.warning),
+                ),
+              ),
+              if (total > 1)
+                AgyTag(
+                  label: '1/$total',
+                  monospace: true,
+                  color: AgyColors.accentBright,
+                  backgroundColor: AgyColors.accentTint,
+                  borderColor: AgyColors.borderAccent,
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            first.question,
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: AgyColors.textPrimary),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final opt in first.options)
+                OutlinedButton(
+                  onPressed: disabled
+                      ? null
+                      : () => widget.onRespondAskQuestion(
+                            interaction,
+                            [
+                              [opt.id],
+                            ],
+                          ),
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AgyColors.bgSubtle,
+                    side: const BorderSide(color: AgyColors.borderAccent),
+                    foregroundColor: AgyColors.accentBright,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                  child: Text(opt.text, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                ),
+            ],
+          ),
         ],
       ),
     );

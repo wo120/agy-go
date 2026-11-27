@@ -383,6 +383,7 @@ class SessionCard {
     required this.pinnedOrder,
     required this.unread,
     required this.needsConfirm,
+    this.pendingInteractionCount = 0,
   });
 
   final String conversationId;
@@ -401,6 +402,7 @@ class SessionCard {
   final int pinnedOrder;
   final bool unread;
   final bool needsConfirm;
+  final int pendingInteractionCount;
 
   factory SessionCard.fromJson(Map<String, dynamic> json) {
     return SessionCard(
@@ -420,6 +422,7 @@ class SessionCard {
       pinnedOrder: (json['pinnedOrder'] as num?)?.toInt() ?? 0,
       unread: (json['unread'] as bool?) ?? false,
       needsConfirm: (json['needsConfirm'] as bool?) ?? false,
+      pendingInteractionCount: (json['pendingInteractionCount'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -683,6 +686,135 @@ class AgentAlert {
       body: (json['body'] as String?) ?? '',
       quickReplies: ((json['quickReplies'] as List?) ?? const []).map((e) => e.toString()).toList(),
       createdAt: (json['createdAt'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+class PermissionRequest {
+  const PermissionRequest({
+    required this.action,
+    required this.target,
+    this.actionDescription = '',
+    this.reason = '',
+    this.suggestedPersistPattern = '',
+    this.allowPersist = false,
+    this.shellName = '',
+  });
+
+  final String action;
+  final String target;
+  final String actionDescription;
+  final String reason;
+  final String suggestedPersistPattern;
+  final bool allowPersist;
+  final String shellName;
+
+  String get persistPattern => suggestedPersistPattern.isNotEmpty ? suggestedPersistPattern : target;
+
+  String get actionLabel {
+    switch (action) {
+      case 'command':
+        return '终端命令';
+      case 'mcp':
+        return 'MCP 工具';
+      case 'read_file':
+        return '读取文件';
+      case 'write_file':
+        return '写入文件';
+      default:
+        return action.isNotEmpty ? action : '权限请求';
+    }
+  }
+
+  factory PermissionRequest.fromJson(Map<String, dynamic> json) {
+    return PermissionRequest(
+      action: (json['action'] as String?) ?? '',
+      target: (json['target'] as String?) ?? '',
+      actionDescription: (json['actionDescription'] as String?) ?? '',
+      reason: (json['reason'] as String?) ?? '',
+      suggestedPersistPattern: (json['suggestedPersistPattern'] as String?) ?? '',
+      allowPersist: (json['allowPersist'] as bool?) ?? false,
+      shellName: (json['shellName'] as String?) ?? '',
+    );
+  }
+}
+
+class AskQuestionOption {
+  const AskQuestionOption({required this.id, required this.text});
+
+  final String id;
+  final String text;
+
+  factory AskQuestionOption.fromJson(Map<String, dynamic> json) {
+    return AskQuestionOption(
+      id: (json['id'] as String?) ?? '',
+      text: (json['text'] as String?) ?? '',
+    );
+  }
+}
+
+class AskQuestionItem {
+  const AskQuestionItem({
+    required this.question,
+    required this.options,
+    this.multiSelect = false,
+  });
+
+  final String question;
+  final List<AskQuestionOption> options;
+  final bool multiSelect;
+
+  factory AskQuestionItem.fromJson(Map<String, dynamic> json) {
+    return AskQuestionItem(
+      question: (json['question'] as String?) ?? '',
+      options: ((json['options'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(AskQuestionOption.fromJson)
+          .toList(),
+      multiSelect: (json['multiSelect'] as bool?) ?? false,
+    );
+  }
+}
+
+class PendingInteraction {
+  const PendingInteraction({
+    required this.conversationId,
+    required this.trajectoryId,
+    required this.stepIndex,
+    required this.kind,
+    this.toolName = '',
+    this.createdAtUnix = 0,
+    this.permission,
+    this.questions = const [],
+  });
+
+  final String conversationId;
+  final String trajectoryId;
+  final int stepIndex;
+  final String kind; // "permission" | "ask_question"
+  final String toolName;
+  final int createdAtUnix;
+  final PermissionRequest? permission;
+  final List<AskQuestionItem> questions;
+
+  bool get isPermission => kind == 'permission' && permission != null;
+  bool get isAskQuestion => kind == 'ask_question' && questions.isNotEmpty;
+
+  factory PendingInteraction.fromJson(Map<String, dynamic> json) {
+    final permMap = json['permission'] as Map<String, dynamic>?;
+    final askMap = json['askQuestion'] as Map<String, dynamic>?;
+    return PendingInteraction(
+      conversationId: (json['conversationId'] as String?) ?? '',
+      trajectoryId: (json['trajectoryId'] as String?) ?? '',
+      stepIndex: (json['stepIndex'] as num?)?.toInt() ?? 0,
+      kind: (json['kind'] as String?) ?? 'permission',
+      toolName: (json['toolName'] as String?) ?? '',
+      createdAtUnix: (json['createdAtUnix'] as num?)?.toInt() ?? 0,
+      permission: permMap != null ? PermissionRequest.fromJson(permMap) : null,
+      questions: ((askMap?['questions'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(AskQuestionItem.fromJson)
+          .toList(),
     );
   }
 }

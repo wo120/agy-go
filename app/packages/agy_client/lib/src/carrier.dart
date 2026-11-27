@@ -244,8 +244,14 @@ class AgyHttpCarrier {
         .toList();
   }
 
-  Future<({SessionCard session, List<TranscriptStep> steps, bool hasMore, List<ArtifactItem> artifacts})>
-      getSession(String conversationId, {int beforeStep = 0, int limit = 80}) async {
+  Future<
+      ({
+        SessionCard session,
+        List<TranscriptStep> steps,
+        bool hasMore,
+        List<ArtifactItem> artifacts,
+        List<PendingInteraction> pendingInteractions,
+      })> getSession(String conversationId, {int beforeStep = 0, int limit = 80}) async {
     final data = await callRpc('sessions.get', {
       'conversationId': conversationId,
       'beforeStep': beforeStep,
@@ -261,6 +267,10 @@ class AgyHttpCarrier {
       artifacts: ((data['artifacts'] as List?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(ArtifactItem.fromJson)
+          .toList(),
+      pendingInteractions: ((data['pendingInteractions'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(PendingInteraction.fromJson)
           .toList(),
     );
   }
@@ -292,6 +302,63 @@ class AgyHttpCarrier {
       requestId,
       const Duration(seconds: 28),
     );
+  }
+
+  Future<List<PendingInteraction>> respondPermission({
+    required String conversationId,
+    required String trajectoryId,
+    required int stepIndex,
+    required bool allow,
+    String scope = 'once',
+    String? feedback,
+    String? requestId,
+  }) async {
+    final params = <String, dynamic>{
+      'conversationId': conversationId,
+      'trajectoryId': trajectoryId,
+      'stepIndex': stepIndex,
+      'kind': 'permission',
+      'allow': allow,
+      'scope': scope,
+    };
+    if (feedback != null && feedback.trim().isNotEmpty) {
+      params['feedback'] = feedback.trim();
+    }
+    final data = await callRpc(
+      'sessions.respondInteraction',
+      params,
+      requestId,
+      const Duration(seconds: 20),
+    ) as Map<String, dynamic>?;
+    return ((data?['pendingInteractions'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PendingInteraction.fromJson)
+        .toList();
+  }
+
+  Future<List<PendingInteraction>> respondAskQuestion({
+    required String conversationId,
+    required String trajectoryId,
+    required int stepIndex,
+    required List<List<String>> selectedOptionIds,
+    String? requestId,
+  }) async {
+    final data = await callRpc(
+      'sessions.respondInteraction',
+      {
+        'conversationId': conversationId,
+        'trajectoryId': trajectoryId,
+        'stepIndex': stepIndex,
+        'kind': 'ask_question',
+        'selectedOptionIds': selectedOptionIds,
+      },
+      requestId,
+      const Duration(seconds: 20),
+    ) as Map<String, dynamic>?;
+    return ((data?['pendingInteractions'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(PendingInteraction.fromJson)
+        .toList();
   }
 
   Future<void> pinSession(String conversationId, bool pinned, {int order = 0}) async {

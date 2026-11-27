@@ -809,6 +809,77 @@ void main() {
 
     expect(find.text('流式 152.4 tok/s · E2E 95.8 tok/s · TTFT 6.2s · 1600 tok'), findsOneWidget);
   });
+
+  testWidgets('ChatScreen renders pending permission approval dock and submits allow/persist/deny', (tester) async {
+    final decisions = <({bool allow, String scope, String? feedback})>[];
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(() => _PermissionChatSessionNotifier(decisions)),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-perm'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('pending_interaction_dock')), findsOneWidget);
+    expect(find.text('允许 检查当前运行进程?'), findsOneWidget);
+    expect(find.text('ps -eo pid,comm,args'), findsOneWidget);
+    expect(find.text('终端命令'), findsOneWidget);
+    expect(find.text("本次会话始终允许 'ps'"), findsOneWidget);
+    expect(find.text("始终允许 'ps'"), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('perm_deny_with_reason_toggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('perm_deny_reason_input')), '改用 pgrep');
+    await tester.tap(find.byKey(const Key('perm_deny_reason_submit')));
+    await tester.pumpAndSettle();
+
+    expect(decisions.length, 1);
+    expect(decisions.first.allow, isFalse);
+    expect(decisions.first.scope, 'once');
+    expect(decisions.first.feedback, '改用 pgrep');
+    expect(find.byKey(const Key('pending_interaction_dock')), findsNothing);
+  });
+
+  testWidgets('SessionSummaryCard displays 待授权 badge when pendingInteractionCount > 0', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAgyTheme(),
+        home: Scaffold(
+          body: SessionSummaryCard(
+            card: const SessionCard(
+              conversationId: 'c-auth',
+              title: '检查系统进程',
+              preview: '正在执行命令',
+              stepCount: 8,
+              lastModifiedUnix: 1795527000,
+              workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+              status: 'RUNNING',
+              running: true,
+              subagentCount: 0,
+              artifactCount: 0,
+              pinned: false,
+              pinnedOrder: 0,
+              unread: false,
+              needsConfirm: true,
+              pendingInteractionCount: 1,
+            ),
+            onTap: () {},
+            onLongPress: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('待授权'), findsOneWidget);
+  });
 }
 
 class _FakeDesktopSessionsNotifier extends SessionsStateNotifier {
@@ -1081,5 +1152,75 @@ class _SpeedChatSessionNotifier extends ChatSessionNotifier {
       rows: TranscriptReducer.reduce(steps),
       loading: false,
     );
+  }
+}
+
+class _PermissionChatSessionNotifier extends ChatSessionNotifier {
+  _PermissionChatSessionNotifier(this.decisions);
+
+  final List<({bool allow, String scope, String? feedback})> decisions;
+
+  @override
+  ChatSessionState build(String conversationId) {
+    const steps = [
+      TranscriptStep(
+        stepIndex: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        createdAtUnix: 1795597636,
+        content: '检查当前运行进程',
+      ),
+    ];
+    return ChatSessionState(
+      session: const SessionCard(
+        conversationId: 'c-perm',
+        title: '进程检查',
+        preview: '准备执行 ps',
+        stepCount: 8,
+        lastModifiedUnix: 1795597642,
+        workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+        status: 'RUNNING',
+        running: true,
+        subagentCount: 0,
+        artifactCount: 0,
+        pinned: false,
+        pinnedOrder: 0,
+        unread: false,
+        needsConfirm: true,
+        pendingInteractionCount: 1,
+      ),
+      steps: steps,
+      rows: TranscriptReducer.reduce(steps),
+      pendingInteractions: const [
+        PendingInteraction(
+          conversationId: 'c-perm',
+          trajectoryId: 'traj-perm',
+          stepIndex: 8,
+          kind: 'permission',
+          toolName: 'run_command',
+          permission: PermissionRequest(
+            action: 'command',
+            target: 'ps -eo pid,comm,args',
+            actionDescription: '检查当前运行进程',
+            suggestedPersistPattern: 'ps',
+            allowPersist: true,
+            shellName: 'zsh',
+          ),
+        ),
+      ],
+      loading: false,
+    );
+  }
+
+  @override
+  Future<void> respondPermission(
+    PendingInteraction interaction, {
+    required bool allow,
+    String scope = 'once',
+    String? feedback,
+  }) async {
+    decisions.add((allow: allow, scope: scope, feedback: feedback));
+    state = state.copyWith(pendingInteractions: const []);
   }
 }

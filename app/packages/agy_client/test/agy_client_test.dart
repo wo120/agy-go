@@ -286,5 +286,47 @@ void main() {
       expect(isDirectEndpointUrl('http://100.100.10.5:8765'), isTrue);
       expect(isDirectEndpointUrl('https://bridge.example.com'), isFalse);
     });
+
+    test('PendingInteraction parses permission and ask_question payloads', () {
+      final perm = PendingInteraction.fromJson({
+        'conversationId': 'conv-1',
+        'trajectoryId': 'traj-1',
+        'stepIndex': 8,
+        'kind': 'permission',
+        'toolName': 'run_command',
+        'permission': {
+          'action': 'command',
+          'target': 'ps -eo pid,comm,args',
+          'actionDescription': '检查当前运行进程',
+          'suggestedPersistPattern': 'ps',
+          'allowPersist': true,
+          'shellName': 'zsh',
+        },
+      });
+      expect(perm.isPermission, isTrue);
+      expect(perm.permission?.actionLabel, '终端命令');
+      expect(perm.permission?.persistPattern, 'ps');
+      expect(perm.permission?.allowPersist, isTrue);
+
+      final ask = PendingInteraction.fromJson({
+        'conversationId': 'conv-2',
+        'trajectoryId': 'traj-2',
+        'stepIndex': 12,
+        'kind': 'ask_question',
+        'askQuestion': {
+          'questions': [
+            {
+              'question': '继续执行吗？',
+              'options': [
+                {'id': '1', 'text': '确认'},
+                {'id': '2', 'text': '取消'},
+              ],
+            },
+          ],
+        },
+      });
+      expect(ask.isAskQuestion, isTrue);
+      expect(ask.questions.single.options.first.id, '1');
+    });
   });
 }

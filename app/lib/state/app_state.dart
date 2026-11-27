@@ -712,9 +712,11 @@ class ChatSessionState {
     this.steps = const [],
     this.rows = const [],
     this.artifacts = const [],
+    this.pendingInteractions = const [],
     this.hasMore = false,
     this.loading = true,
     this.sending = false,
+    this.respondingInteraction = false,
     this.error,
   });
 
@@ -722,9 +724,11 @@ class ChatSessionState {
   final List<TranscriptStep> steps;
   final List<ChatRow> rows;
   final List<ArtifactItem> artifacts;
+  final List<PendingInteraction> pendingInteractions;
   final bool hasMore;
   final bool loading;
   final bool sending;
+  final bool respondingInteraction;
   final String? error;
 
   ChatSessionState copyWith({
@@ -732,9 +736,11 @@ class ChatSessionState {
     List<TranscriptStep>? steps,
     List<ChatRow>? rows,
     List<ArtifactItem>? artifacts,
+    List<PendingInteraction>? pendingInteractions,
     bool? hasMore,
     bool? loading,
     bool? sending,
+    bool? respondingInteraction,
     String? error,
     bool clearError = false,
   }) {
@@ -743,9 +749,11 @@ class ChatSessionState {
       steps: steps ?? this.steps,
       rows: rows ?? this.rows,
       artifacts: artifacts ?? this.artifacts,
+      pendingInteractions: pendingInteractions ?? this.pendingInteractions,
       hasMore: hasMore ?? this.hasMore,
       loading: loading ?? this.loading,
       sending: sending ?? this.sending,
+      respondingInteraction: respondingInteraction ?? this.respondingInteraction,
       error: clearError ? null : (error ?? this.error),
     );
   }
@@ -759,7 +767,12 @@ const int _kMaxRecentChatCache = 12;
 void _saveChatCache(String conversationId, ChatSessionState snapshot) {
   if (snapshot.steps.isEmpty) return;
   _recentChatCache.remove(conversationId);
-  _recentChatCache[conversationId] = snapshot.copyWith(loading: false, sending: false, clearError: true);
+  _recentChatCache[conversationId] = snapshot.copyWith(
+    loading: false,
+    sending: false,
+    respondingInteraction: false,
+    clearError: true,
+  );
   while (_recentChatCache.length > _kMaxRecentChatCache) {
     _recentChatCache.remove(_recentChatCache.keys.first);
   }
@@ -888,6 +901,7 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         steps: res.steps,
         rows: rows,
         artifacts: res.artifacts,
+        pendingInteractions: res.pendingInteractions,
         hasMore: res.hasMore,
         loading: false,
         clearError: true,
@@ -926,6 +940,80 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
     }
   }
 
+  Future<void> respondPermission(
+    PendingInteraction interaction, {
+    required bool allow,
+    String scope = 'once',
+    String? feedback,
+  }) async {
+    if (state.respondingInteraction || _disposed) return;
+    final c = ref.read(hostConnectionProvider.notifier).carrier;
+    if (c == null) return;
+
+    state = state.copyWith(respondingInteraction: true, clearError: true);
+    final reqId = c.nextRequestId();
+    try {
+      final remaining = await c.respondPermission(
+        conversationId: arg,
+        trajectoryId: interaction.trajectoryId,
+        stepIndex: interaction.stepIndex,
+        allow: allow,
+        scope: scope,
+        feedback: feedback,
+        requestId: reqId,
+      );
+      if (_disposed) return;
+      final nextState = state.copyWith(
+        pendingInteractions: remaining,
+        respondingInteraction: false,
+        clearError: true,
+      );
+      state = nextState;
+      _saveChatCache(arg, nextState);
+    } on BridgeRemoteException catch (e) {
+      if (_disposed) return;
+      state = state.copyWith(respondingInteraction: false, error: e.message);
+    } catch (e) {
+      if (_disposed) return;
+      state = state.copyWith(respondingInteraction: false, error: '提交授权失败：$e');
+    }
+  }
+
+  Future<void> respondAskQuestion(
+    PendingInteraction interaction,
+    List<List<String>> selectedOptionIds,
+  ) async {
+    if (state.respondingInteraction || _disposed) return;
+    final c = ref.read(hostConnectionProvider.notifier).carrier;
+    if (c == null) return;
+
+    state = state.copyWith(respondingInteraction: true, clearError: true);
+    final reqId = c.nextRequestId();
+    try {
+      final remaining = await c.respondAskQuestion(
+        conversationId: arg,
+        trajectoryId: interaction.trajectoryId,
+        stepIndex: interaction.stepIndex,
+        selectedOptionIds: selectedOptionIds,
+        requestId: reqId,
+      );
+      if (_disposed) return;
+      final nextState = state.copyWith(
+        pendingInteractions: remaining,
+        respondingInteraction: false,
+        clearError: true,
+      );
+      state = nextState;
+      _saveChatCache(arg, nextState);
+    } on BridgeRemoteException catch (e) {
+      if (_disposed) return;
+      state = state.copyWith(respondingInteraction: false, error: e.message);
+    } catch (e) {
+      if (_disposed) return;
+      state = state.copyWith(respondingInteraction: false, error: '提交选择失败：$e');
+    }
+  }
+
   void _onChannelMessage(MuxEventMessage msg) {
     if (_disposed) return;
     try {
@@ -939,6 +1027,10 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
             .whereType<Map<String, dynamic>>()
             .map(ArtifactItem.fromJson)
             .toList();
+        final pending = ((d['pendingInteractions'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(PendingInteraction.fromJson)
+            .toList();
         final session = d['session'] is Map<String, dynamic>
             ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
             : state.session;
@@ -947,6 +1039,7 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
           steps: steps,
           rows: TranscriptReducer.reduce(steps),
           artifacts: artifacts,
+          pendingInteractions: pending,
           hasMore: (d['hasMore'] as bool?) ?? state.hasMore,
           loading: false,
           clearError: true,
@@ -989,6 +1082,15 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
             .map(ArtifactItem.fromJson)
             .toList();
         state = state.copyWith(artifacts: artifacts);
+      } else if (msg.type == 'event' && msg.event == 'interaction.updated' && msg.data is Map<String, dynamic>) {
+        final d = msg.data as Map<String, dynamic>;
+        final pending = ((d['pendingInteractions'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(PendingInteraction.fromJson)
+            .toList();
+        final nextState = state.copyWith(pendingInteractions: pending);
+        state = nextState;
+        _saveChatCache(arg, nextState);
       }
     } catch (_) {
       // Ignore malformed incremental frame; HTTP loadInitial / reload provides explicit error feedback.
