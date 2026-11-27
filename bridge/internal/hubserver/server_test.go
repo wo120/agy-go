@@ -293,3 +293,324 @@ func TestRPCFileSandboxAndMuxWS(t *testing.T) {
 		t.Fatalf("expected Funnel URL injected into endpoints, got %v", eps)
 	}
 }
+
+func TestSecurityHardening(t *testing.T) {
+	tmp := t.TempDir()
+	agyDir := filepath.Join(tmp, "antigravity")
+	_ = os.MkdirAll(filepath.Join(agyDir, "brain", "conv-1"), 0o755)
+	_ = os.MkdirAll(filepath.Join(agyDir, "daemon"), 0o755)
+
+	cfg := &config.Config{
+		HostName:         "ClawStation",
+		AntigravityDir:   agyDir,
+		BootstrapToken:   "agy_live_initial_token",
+		SubscriptionTier: "Google AI Ultra",
+		Gemini5hBudget:   10000,
+		Gemini7dBudget:   100000,
+		Claude5hBudget:   10000,
+		Claude7dBudget:   100000,
+	}
+	store, err := statestore.Open(filepath.Join(tmp, "bridge_state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	reader := agyreader.New(filepath.Join(agyDir, "none.db"))
+	watcher := brainwatcher.New(filepath.Join(agyDir, "brain"), store, brainwatcher.EventCallbacks{})
+	quota, _ := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, 10000, 100000, 10000, 100000)
+	runner := cmdrunner.New(filepath.Join(agyDir, "bin", "agentapi"), filepath.Join(agyDir, "daemon"))
+	notif := notifier.NewManager(store)
+
+	srv := New(cfg, store, reader, watcher, quota, runner, notif)
+	srv.wsAuthTimeoutDur = 150 * time.Millisecond
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	rpcCall := func(token, method string, params any) (int, RPCResponse) {
+		b, _ := json.Marshal(map[string]any{"requestId": "sec-1", "method": method, "params": params})
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/rpc", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+token)
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out RPCResponse
+		_ = json.NewDecoder(r.Body).Decode(&out)
+		return r.StatusCode, out
+	}
+
+	// 1. Conversation ID traversal rejected across RPC methods and WS sub
+	for _, badID := range []string{"../", "../../etc", `a\b`, "a/b", "."} {
+		for _, method := range []string{"sessions.get", "artifacts.list"} {
+			status, out := rpcCall("agy_live_initial_token", method, map[string]any{"conversationId": badID})
+			if status != http.StatusOK || out.OK || out.Error == nil || out.Error.Code != "INVALID_ARGS" {
+				t.Fatalf("%s with %q: expected INVALID_ARGS, got status=%d resp=%+v", method, badID, status, out)
+			}
+		}
+	}
+
+	// 2. Authenticated WS connection rejects traversal channel subscription
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/mux"
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer agy_live_initial_token")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	var initSnap MuxFrame
+	if err := conn.ReadJSON(&initSnap); err != nil {
+		t.Fatalf("read initial snapshot: %v", err)
+	}
+	if err := conn.WriteJSON(MuxFrame{Type: "sub", Channel: "session:../../"}); err != nil {
+		t.Fatal(err)
+	}
+	var errFrame MuxFrame
+	if err := conn.ReadJSON(&errFrame); err != nil {
+		t.Fatalf("expected error frame on traversal sub: %v", err)
+	}
+	if errFrame.Type != "error" || errFrame.Error == nil || errFrame.Error.Code != "INVALID_ARGS" {
+		t.Fatalf("unexpected frame for traversal sub: %+v", errFrame)
+	}
+
+	// 3. RotateBootstrapToken disconnects existing WS clients and invalidates old token
+	cfgPath := filepath.Join(tmp, "config.json")
+	newTok, err := srv.RotateBootstrapToken(cfgPath)
+	if err != nil || newTok == "" || newTok == "agy_live_initial_token" {
+		t.Fatalf("RotateBootstrapToken failed: tok=%q err=%v", newTok, err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var afterRotate MuxFrame
+	if err := conn.ReadJSON(&afterRotate); err == nil {
+		t.Fatalf("expected existing WS connection to be closed on token rotation, but read frame: %+v", afterRotate)
+	}
+	if st, _ := rpcCall("agy_live_initial_token", "alerts.list", map[string]any{}); st != http.StatusUnauthorized {
+		t.Fatalf("expected old token to be rejected with 401, got %d", st)
+	}
+	if st, out := rpcCall(newTok, "alerts.list", map[string]any{}); st != http.StatusOK || !out.OK {
+		t.Fatalf("expected new token to succeed, got status=%d resp=%+v", st, out)
+	}
+
+	// 4. Unauthenticated WS connection is closed after auth timeout
+	unauthConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("unauth ws dial: %v", err)
+	}
+	defer unauthConn.Close()
+	_ = unauthConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var idleFrame MuxFrame
+	if err := unauthConn.ReadJSON(&idleFrame); err == nil {
+		t.Fatalf("expected unauthenticated idle WS to be closed by timeout, got frame: %+v", idleFrame)
+	}
+}
+
+func TestPendingInteractionsRPCAndWSFlow(t *testing.T) {
+	tmp := t.TempDir()
+	agyDir := filepath.Join(tmp, "antigravity")
+	brainConv := filepath.Join(agyDir, "brain", "conv-auth")
+	logsDir := filepath.Join(brainConv, ".system_generated", "logs")
+	_ = os.MkdirAll(logsDir, 0o755)
+	_ = os.MkdirAll(filepath.Join(agyDir, "daemon"), 0o755)
+
+	agyDBPath := filepath.Join(agyDir, "conversation_summaries.db")
+	db, err := sql.Open("sqlite", agyDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE conversation_summaries (
+			conversation_id TEXT PRIMARY KEY,
+			title TEXT NOT NULL DEFAULT "",
+			preview TEXT NOT NULL DEFAULT "",
+			step_count INTEGER NOT NULL DEFAULT 0,
+			last_modified_time DATETIME NOT NULL,
+			workspace_uris TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT "",
+			source TEXT NOT NULL DEFAULT "",
+			parent_conversation_id TEXT NOT NULL DEFAULT "",
+			nesting_depth INTEGER NOT NULL DEFAULT 0,
+			not_fully_idle NUMERIC NOT NULL DEFAULT 0,
+			killed NUMERIC NOT NULL DEFAULT 0,
+			last_user_input_time DATETIME NOT NULL,
+			last_user_input_step_index INTEGER NOT NULL DEFAULT -1
+		);
+		CREATE TABLE conversation_parents (conversation_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL) WITHOUT ROWID;
+		INSERT INTO conversation_summaries VALUES
+			('conv-auth', '进程检查任务', '准备执行 ps 命令', 8, '2026-11-27 12:35:00+00:00', '["file:///tmp"]', 'CASCADE_RUN_STATUS_RUNNING', '', '', 0, 1, 0, '2026-11-27 12:34:00+00:00', 0);
+	`)
+	_ = db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-27T12:34:00Z","content":"检查进程"}`+"\n",
+	), 0o644)
+
+	resolved := false
+	var gotHandleReq map[string]any
+	lsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories":
+			w.WriteHeader(http.StatusOK)
+			if resolved {
+				_, _ = w.Write([]byte(`{"trajectorySummaries":{"conv-auth":{"trajectoryId":"traj-1","waitingSteps":[]}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{
+				"trajectorySummaries": {
+					"conv-auth": {
+						"trajectoryId": "traj-1",
+						"waitingSteps": [
+							{
+								"stepIndex": 8,
+								"step": {
+									"type": "CORTEX_STEP_TYPE_GENERIC",
+									"status": "CORTEX_STEP_STATUS_WAITING",
+									"requestedInteraction": {
+										"permission": {
+											"resource": {"action": "command", "target": "ps -eo pid,comm,args"},
+											"persistSuggestionType": "PERSIST_SUGGESTION_TYPE_SUGGESTED",
+											"suggestedPersistPattern": "ps",
+											"actionDescription": "检查当前运行进程",
+											"shellName": "zsh"
+										}
+									}
+								}
+							}
+						]
+					}
+				}
+			}`))
+		case "/exa.language_server_pb.LanguageServerService/HandleCascadeUserInteraction":
+			_ = json.NewDecoder(r.Body).Decode(&gotHandleReq)
+			resolved = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer lsSrv.Close()
+
+	t.Setenv("ANTIGRAVITY_LS_ADDRESS", strings.TrimPrefix(lsSrv.URL, "http://"))
+	t.Setenv("ANTIGRAVITY_CSRF_TOKEN", "csrf-test")
+
+	cfg := &config.Config{
+		HostName:         "ClawStation",
+		AntigravityDir:   agyDir,
+		BootstrapToken:   "agy_live_perm_test",
+		SubscriptionTier: "Google AI Ultra",
+		Gemini5hBudget:   10000,
+		Gemini7dBudget:   100000,
+		Claude5hBudget:   10000,
+		Claude7dBudget:   100000,
+	}
+	store, err := statestore.Open(filepath.Join(tmp, "bridge_state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	reader := agyreader.New(agyDBPath)
+	watcher := brainwatcher.New(filepath.Join(agyDir, "brain"), store, brainwatcher.EventCallbacks{})
+	_ = watcher.ScanAll()
+	quota, _ := quotamonitor.NewMonitor(store, cfg.SubscriptionTier, 10000, 100000, 10000, 100000)
+	runner := cmdrunner.New(filepath.Join(agyDir, "bin", "agentapi"), filepath.Join(agyDir, "daemon"))
+	notif := notifier.NewManager(store)
+
+	srv := New(cfg, store, reader, watcher, quota, runner, notif)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 1. Connect WS and subscribe to session:conv-auth; snapshot includes pendingInteractions
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/mux"
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer agy_live_perm_test")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	var globalSnap MuxFrame
+	if err := conn.ReadJSON(&globalSnap); err != nil {
+		t.Fatalf("read global snapshot: %v", err)
+	}
+	if err := conn.WriteJSON(MuxFrame{Type: "sub", Channel: "session:conv-auth"}); err != nil {
+		t.Fatal(err)
+	}
+	var sessSnap MuxFrame
+	if err := conn.ReadJSON(&sessSnap); err != nil {
+		t.Fatalf("read session snapshot: %v", err)
+	}
+	snapMap := sessSnap.Data.(map[string]any)
+	pendingList := snapMap["pendingInteractions"].([]any)
+	if len(pendingList) != 1 {
+		t.Fatalf("expected 1 pending interaction in session snapshot, got %+v", snapMap["pendingInteractions"])
+	}
+	sessionMap := snapMap["session"].(map[string]any)
+	if sessionMap["needsConfirm"] != true || int(sessionMap["pendingInteractionCount"].(float64)) != 1 {
+		t.Fatalf("expected needsConfirm=true and pendingInteractionCount=1, got %+v", sessionMap)
+	}
+
+	// 2. Submit permission decision via sessions.respondInteraction
+	reqBody, _ := json.Marshal(map[string]any{
+		"requestId": "perm-req-1",
+		"method":    "sessions.respondInteraction",
+		"params": map[string]any{
+			"conversationId": "conv-auth",
+			"stepIndex":      8,
+			"kind":           "permission",
+			"allow":          true,
+			"scope":          "once",
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/rpc", bytes.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer agy_live_perm_test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var rpcOut struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Handled             bool                           `json:"handled"`
+			PendingInteractions []cmdrunner.PendingInteraction `json:"pendingInteractions"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rpcOut); err != nil {
+		t.Fatal(err)
+	}
+	if !rpcOut.OK || !rpcOut.Data.Handled || len(rpcOut.Data.PendingInteractions) != 0 {
+		t.Fatalf("expected handled=true with 0 remaining interactions, got %+v", rpcOut)
+	}
+	if gotHandleReq == nil || gotHandleReq["cascadeId"] != "conv-auth" {
+		t.Fatalf("expected HandleCascadeUserInteraction called for conv-auth, got %+v", gotHandleReq)
+	}
+
+	// 3. WS receives interaction.updated clearing the pending list
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	sawCleared := false
+	for i := 0; i < 4; i++ {
+		var frame MuxFrame
+		if err := conn.ReadJSON(&frame); err != nil {
+			break
+		}
+		if frame.Type == "event" && frame.Event == "interaction.updated" {
+			dataMap := frame.Data.(map[string]any)
+			if list, ok := dataMap["pendingInteractions"].([]any); ok && len(list) == 0 {
+				sawCleared = true
+				break
+			}
+		}
+	}
+	if !sawCleared {
+		t.Fatal("expected WS interaction.updated event with empty pendingInteractions after approval")
+	}
+}

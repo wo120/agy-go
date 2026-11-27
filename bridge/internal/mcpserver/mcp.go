@@ -152,8 +152,16 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "agy_remote_pairing_info",
-			"description": "Return the mobile pairing endpoints and QR pairing instructions for connecting the Android AGY Go app to this Mac.",
-			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			"description": "Return the mobile pairing endpoints and QR pairing instructions for connecting the Android AGY Go app to this Mac. Redacts the raw bearer token by default to avoid leaking credentials into LLM context; pass includeToken=true only when the user explicitly requests the raw pairing JSON.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"includeToken": map[string]any{
+						"type":        "boolean",
+						"description": "Set true only when the user explicitly asks to export the raw pairing JSON containing the bearer token.",
+					},
+				},
+			},
 		},
 		{
 			"name":        "agy_remote_notify_mobile",
@@ -180,9 +188,14 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]any)
 	case "agy_remote_tps":
 		return s.toolTPS(ctx)
 	case "agy_remote_pairing_info":
+		includeToken, _ := args["includeToken"].(bool)
+		if !includeToken {
+			payload := s.cfg.BuildPairingPayload("<REDACTED>")
+			return fmt.Sprintf("主机：%s\n可用端点：%v\n密钥：已脱敏隐藏（避免明文 Token 写入对话日志）\n\n推荐直接在 Antigravity 右侧边栏打开 [agy-remote](sidecar://agy-remote/remote/) 面板扫码配对，或在终端执行 `agy-remote pair`。\n如需导出含明文密钥的配对 JSON，请明确告知。", payload.HostName, payload.Endpoints), false
+		}
 		payload := s.cfg.BuildPairingPayload(s.cfg.BootstrapToken)
 		raw, _ := json.MarshalIndent(payload, "", "  ")
-		return fmt.Sprintf("主机：%s\n可用端点：%v\n\n可在 Antigravity 右侧边栏打开 agy-remote 面板直接扫码，或粘贴以下配对 JSON：\n%s", payload.HostName, payload.Endpoints, string(raw)), false
+		return fmt.Sprintf("主机：%s\n可用端点：%v\n\n注意：以下 JSON 包含完整远程控制密钥，请勿分享到公开渠道。\n%s", payload.HostName, payload.Endpoints, string(raw)), false
 	case "agy_remote_notify_mobile":
 		return s.toolNotifyMobile(args)
 	default:

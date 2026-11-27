@@ -107,9 +107,23 @@ func TestSidecarUIStatusAndTokenAuth(t *testing.T) {
 	if !strings.Contains(string(htmlBytes), "输出速度监控 (TPS · 5h)") {
 		t.Fatalf("expected Sidecar HTML to contain TPS monitor card")
 	}
+	if !strings.Contains(string(htmlBytes), `headers: { "x-sidecar-token": SIDECAR_TOKEN }`) ||
+		!strings.Contains(string(htmlBytes), "escHtml(e)") ||
+		!strings.Contains(string(htmlBytes), "escHtml(p.displayName)") {
+		t.Fatalf("expected Sidecar HTML to include token header on /api/status and HTML escaping")
+	}
 
-	// GET /api/status returns live TPS snapshot
-	stResp, err := http.Get(ts.URL + "/api/status")
+	// GET /api/status without sidecar token rejected with 401 (prevents local token theft)
+	unauthStatusResp, err := http.Get(ts.URL + "/api/status")
+	if err != nil || unauthStatusResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on /api/status without token, got status=%d err=%v", unauthStatusResp.StatusCode, err)
+	}
+	_ = unauthStatusResp.Body.Close()
+
+	// GET /api/status with valid x-sidecar-token returns live TPS snapshot
+	stReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/status", nil)
+	stReq.Header.Set("x-sidecar-token", "secret_ui_tok")
+	stResp, err := http.DefaultClient.Do(stReq)
 	if err != nil || stResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/status failed: status=%d err=%v", stResp.StatusCode, err)
 	}

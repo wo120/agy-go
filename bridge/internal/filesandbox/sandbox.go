@@ -240,7 +240,7 @@ func isWithinRoot(target, root string) bool {
 func isSensitivePath(fullPath string) bool {
 	parts := strings.Split(filepath.ToSlash(fullPath), "/")
 	for _, p := range parts {
-		if p == ".git" || p == ".ssh" {
+		if p == ".git" || p == ".ssh" || p == ".aws" || p == ".gnupg" || p == ".kube" {
 			return true
 		}
 	}
@@ -249,7 +249,8 @@ func isSensitivePath(fullPath string) bool {
 
 func isSensitiveFilename(name string) bool {
 	lower := strings.ToLower(name)
-	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
+	if lower == ".env" || strings.HasPrefix(lower, ".env.") ||
+		lower == ".npmrc" || lower == ".pypirc" || lower == ".netrc" || lower == "auth.json" {
 		return true
 	}
 	for _, suffix := range []string{".pem", ".key", ".p12", ".pfx", ".pb"} {
@@ -257,7 +258,7 @@ func isSensitiveFilename(name string) bool {
 			return true
 		}
 	}
-	for _, prefix := range []string{"id_rsa", "id_ed25519", "id_ecdsa"} {
+	for _, prefix := range []string{"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}

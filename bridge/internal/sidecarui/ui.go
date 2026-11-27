@@ -2,6 +2,7 @@ package sidecarui
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -37,18 +38,18 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/rotate-token", s.requireToken(s.handleRotateToken))
-	mux.HandleFunc("/api/test-notify", s.requireToken(s.handleTestNotify))
-	mux.HandleFunc("/api/tunnel/enable", s.requireToken(s.handleTunnelEnable))
-	mux.HandleFunc("/api/tunnel/disable", s.requireToken(s.handleTunnelDisable))
-	mux.HandleFunc("/api/tunnel/logout", s.requireToken(s.handleTunnelLogout))
+	mux.HandleFunc("/api/status", s.requireTokenFor(http.MethodGet, s.handleStatus))
+	mux.HandleFunc("/api/rotate-token", s.requireTokenFor(http.MethodPost, s.handleRotateToken))
+	mux.HandleFunc("/api/test-notify", s.requireTokenFor(http.MethodPost, s.handleTestNotify))
+	mux.HandleFunc("/api/tunnel/enable", s.requireTokenFor(http.MethodPost, s.handleTunnelEnable))
+	mux.HandleFunc("/api/tunnel/disable", s.requireTokenFor(http.MethodPost, s.handleTunnelDisable))
+	mux.HandleFunc("/api/tunnel/logout", s.requireTokenFor(http.MethodPost, s.handleTunnelLogout))
 	return mux
 }
 
-func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) requireTokenFor(method string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
+		if r.Method != method {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -57,7 +58,7 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 			if provided == "" {
 				provided = r.URL.Query().Get("token")
 			}
-			if provided != s.uiToken {
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(s.uiToken)) != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -389,7 +390,7 @@ function render(data) {
   }
   lastPairingJson = data.pairingJson || "";
   const eps = data.endpoints || [];
-  document.getElementById("endpointsBox").innerHTML = eps.map(e => '<div class="ep">' + e + '</div>').join("");
+  document.getElementById("endpointsBox").innerHTML = eps.map(e => '<div class="ep">' + escHtml(e) + '</div>').join("");
 
   renderTunnel(data.tunnel || { state: "disabled" });
   renderTPS(data.tps);
@@ -398,12 +399,14 @@ function render(data) {
   if (q && q.pools) {
     document.getElementById("subTier").textContent = q.subscriptionTier || "Google AI";
     document.getElementById("quotaBox").innerHTML = q.pools.map(p => {
-      const w5 = p.remaining5hPct < 40;
-      const w7 = p.remaining7dPct < 40;
+      const pct5 = Math.max(0, Math.min(100, Number(p.remaining5hPct) || 0));
+      const pct7 = Math.max(0, Math.min(100, Number(p.remaining7dPct) || 0));
+      const w5 = pct5 < 40;
+      const w7 = pct7 < 40;
       return '<div style="margin-bottom:10px">' +
-        '<div style="font-size:12.5px;font-weight:600">' + p.displayName + '</div>' +
-        '<div class="quota-row"><span class="muted">5h</span><div class="track"><div class="fill ' + (w5 ? 'warn' : '') + '" style="width:' + p.remaining5hPct + '%"></div></div><span class="' + (w5 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + p.remaining5hPct + '%</span><span class="muted" style="text-align:right">' + fmtReset(p.reset5hAt, p.remaining5hPct) + '</span></div>' +
-        '<div class="quota-row"><span class="muted">7d</span><div class="track"><div class="fill ' + (w7 ? 'warn' : '') + '" style="width:' + p.remaining7dPct + '%"></div></div><span class="' + (w7 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + p.remaining7dPct + '%</span><span class="muted" style="text-align:right">' + fmtReset(p.reset7dAt, p.remaining7dPct) + '</span></div>' +
+        '<div style="font-size:12.5px;font-weight:600">' + escHtml(p.displayName) + '</div>' +
+        '<div class="quota-row"><span class="muted">5h</span><div class="track"><div class="fill ' + (w5 ? 'warn' : '') + '" style="width:' + pct5 + '%"></div></div><span class="' + (w5 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct5 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset5hAt, pct5)) + '</span></div>' +
+        '<div class="quota-row"><span class="muted">7d</span><div class="track"><div class="fill ' + (w7 ? 'warn' : '') + '" style="width:' + pct7 + '%"></div></div><span class="' + (w7 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct7 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset7dAt, pct7)) + '</span></div>' +
       '</div>';
     }).join("");
     if (q.updatedAt) {
@@ -600,7 +603,8 @@ async function refresh(force, announce) {
     if (force && !announce && Date.now() - lastForceRefreshAt < 3000) return;
     if (force) lastForceRefreshAt = Date.now();
     const url = force ? "/api/status?refresh=1&_t=" + Date.now() : "/api/status?_t=" + Date.now();
-    const r = await fetch(url, { cache: "no-store" });
+    const r = await fetch(url, { cache: "no-store", headers: { "x-sidecar-token": SIDECAR_TOKEN } });
+    if (!r.ok) return;
     const d = await r.json();
     render(d);
     if (announce) showToast("配额与状态已刷新");

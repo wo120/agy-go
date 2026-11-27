@@ -27,6 +27,7 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agy_remote_pairing_info","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agy_remote_tps","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"agy_remote_pairing_info","arguments":{"includeToken":true}}}`,
 	}, "\n") + "\n"
 
 	var out bytes.Buffer
@@ -35,8 +36,8 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("expected 4 JSON-RPC responses, got %d: %s", len(lines), out.String())
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 JSON-RPC responses, got %d: %s", len(lines), out.String())
 	}
 
 	var r2 map[string]any
@@ -51,7 +52,13 @@ func TestMCPInitializeAndToolsList(t *testing.T) {
 	if !strings.Contains(lines[2], "ClawStation") {
 		t.Fatalf("expected pairing info response to include hostName, got %s", lines[2])
 	}
+	if strings.Contains(lines[2], "agy_live_test") {
+		t.Fatalf("expected default agy_remote_pairing_info to redact raw token, got %s", lines[2])
+	}
 	if !strings.Contains(lines[3], "windowSeconds") {
 		t.Fatalf("expected agy_remote_tps response to include windowSeconds, got %s", lines[3])
+	}
+	if !strings.Contains(lines[4], "agy_live_test") {
+		t.Fatalf("expected includeToken=true pairing info to contain raw token, got %s", lines[4])
 	}
 }

@@ -68,4 +68,14 @@ func TestSandboxSecurityAndPaging(t *testing.T) {
 	if _, err := ReadTextPage(symlinkEscape, roots, 0, 100); !errors.Is(err, ErrPathForbidden) {
 		t.Fatalf("expected ErrPathForbidden for symlink escape, got %v", err)
 	}
+
+	// 6. Additional credential files and sensitive directories blocked
+	_ = os.MkdirAll(filepath.Join(wsDir, ".aws"), 0o755)
+	for _, rel := range []string{".npmrc", "auth.json", filepath.Join(".aws", "config")} {
+		p := filepath.Join(wsDir, rel)
+		_ = os.WriteFile(p, []byte("secret"), 0o644)
+		if _, err := ReadTextPage(p, roots, 0, 100); !errors.Is(err, ErrPathForbidden) {
+			t.Fatalf("expected ErrPathForbidden for %s, got %v", rel, err)
+		}
+	}
 }

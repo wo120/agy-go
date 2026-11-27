@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -56,10 +57,11 @@ type SessionCard struct {
 	ArtifactCount    int                     `json:"artifactCount"`
 	Model            string                  `json:"model,omitempty"`
 	ModelDisplay     string                  `json:"modelDisplay,omitempty"`
-	Pinned           bool                    `json:"pinned"`
-	PinnedOrder      int                     `json:"pinnedOrder"`
-	Unread           bool                    `json:"unread"`
-	NeedsConfirm     bool                    `json:"needsConfirm"`
+	Pinned                  bool                    `json:"pinned"`
+	PinnedOrder             int                     `json:"pinnedOrder"`
+	Unread                  bool                    `json:"unread"`
+	NeedsConfirm            bool                    `json:"needsConfirm"`
+	PendingInteractionCount int                     `json:"pendingInteractionCount,omitempty"`
 }
 
 // ProjectGroup groups sessions by workspace when mode == "project".
@@ -127,8 +129,11 @@ type Server struct {
 	notifier *notifier.Manager
 	tunnel   TunnelProvider
 
-	generation string
-	upgrader   websocket.Upgrader
+	generation       string
+	upgrader         websocket.Upgrader
+	wsAuthTimeoutDur time.Duration
+
+	tokenMu sync.RWMutex
 
 	clientsMu sync.RWMutex
 	clients   map[*wsClient]struct{}
@@ -145,6 +150,11 @@ type Server struct {
 
 	tpsSigMu   sync.Mutex
 	lastTPSSig string
+
+	pendingMu      sync.RWMutex
+	pendingByConv  map[string][]cmdrunner.PendingInteraction
+	pendingAlerted map[string]struct{}
+	pendingSyncAt  time.Time
 }
 
 // New constructs the HTTP/WebSocket bridge server.
@@ -165,14 +175,17 @@ func New(
 		quota:        quota,
 		runner:       runner,
 		notifier:     notif,
-		generation:   fmt.Sprintf("gen_%d", time.Now().UnixNano()),
+		generation:       fmt.Sprintf("gen_%d", time.Now().UnixNano()),
+		wsAuthTimeoutDur: 5 * time.Second,
 		upgrader: websocket.Upgrader{
 			CheckOrigin:       func(*http.Request) bool { return true },
 			EnableCompression: true,
 		},
-		clients:      make(map[*wsClient]struct{}),
-		idemCache:    make(map[string]RPCResponse),
-		runningSince: make(map[string]int64),
+		clients:        make(map[*wsClient]struct{}),
+		idemCache:      make(map[string]RPCResponse),
+		runningSince:   make(map[string]int64),
+		pendingByConv:  make(map[string][]cmdrunner.PendingInteraction),
+		pendingAlerted: make(map[string]struct{}),
 	}
 }
 
@@ -194,7 +207,7 @@ func (s *Server) ConnectedClientCount() int {
 	defer s.clientsMu.RUnlock()
 	count := 0
 	for c := range s.clients {
-		if c.authed {
+		if c.isAuthed() {
 			count++
 		}
 	}
@@ -215,20 +228,42 @@ func (s *Server) TriggerCustomAlert(al notifier.Alert) {
 	s.emitAlert(al)
 }
 
-// RotateBootstrapToken generates a fresh pairing token, persists it to configPath, and updates paired_devices.
+// RotateBootstrapToken generates a fresh pairing token, persists it to configPath,
+// updates paired_devices, and disconnects all active WebSocket clients immediately.
 func (s *Server) RotateBootstrapToken(configPath string) (string, error) {
 	tok, err := config.GenerateToken()
 	if err != nil {
 		return "", err
 	}
+	s.tokenMu.Lock()
 	s.cfg.BootstrapToken = tok
+	s.tokenMu.Unlock()
 	_ = s.store.UpsertDevice("bootstrap", "Default Paired Device", config.HashToken(tok))
 	if configPath != "" {
 		if err := config.Save(configPath, s.cfg); err != nil {
 			return "", err
 		}
 	}
+	s.disconnectAllClients()
 	return tok, nil
+}
+
+func (s *Server) disconnectAllClients() {
+	s.clientsMu.RLock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
+	for c := range s.clients {
+		conns = append(conns, c.conn)
+	}
+	s.clientsMu.RUnlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+func (s *Server) currentBootstrapToken() string {
+	s.tokenMu.RLock()
+	defer s.tokenMu.RUnlock()
+	return s.cfg.BootstrapToken
 }
 
 // SetTunnel attaches an optional remote tunnel provider (embedded Tailscale Funnel).
@@ -294,7 +329,7 @@ func (s *Server) StatusSummaryWithRefresh(ctx context.Context, forceQuota bool) 
 			Hostname: tsfunnel.SanitizeHostname(s.cfg.HostName),
 		}
 	}
-	payload := s.cfg.BuildPairingPayloadWithExtra(s.cfg.BootstrapToken, extraEndpoints)
+	payload := s.cfg.BuildPairingPayloadWithExtra(s.currentBootstrapToken(), extraEndpoints)
 	tpsSnap := s.tpsSnapshot(ctx, forceQuota)
 	if tpsSnap != nil {
 		s.broadcastTPSIfChanged(tpsSnap)
@@ -435,20 +470,24 @@ func (s *Server) OnArtifactChange(convID string) {
 	}
 }
 
-// StartStatePoller periodically checks conversation running->idle transitions and live quota changes.
+// StartStatePoller periodically checks pending permission approvals, running->idle transitions, and live quota changes.
 func (s *Server) StartStatePoller(ctx context.Context) {
-	ticker := time.NewTicker(4 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	go func() {
 		defer ticker.Stop()
 		ticks := 0
+		s.syncPendingInteractions(ctx, true)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.checkCompletionTransitions()
+				s.syncPendingInteractions(ctx, true)
 				ticks++
-				if ticks%4 == 0 && s.ConnectedClientCount() > 0 {
+				if ticks%2 == 0 {
+					s.checkCompletionTransitions()
+				}
+				if ticks%8 == 0 && s.ConnectedClientCount() > 0 {
 					if snap, err := s.quota.RefreshSnapshot(ctx); err == nil && snap != nil {
 						s.broadcastQuotaIfChanged(snap)
 					}
@@ -459,6 +498,152 @@ func (s *Server) StartStatePoller(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func pendingInteractionsSignature(list []cmdrunner.PendingInteraction) string {
+	if len(list) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, item := range list {
+		fmt.Fprintf(&b, "|%s:%d:%s", item.TrajectoryID, item.StepIndex, item.Kind)
+		if item.Permission != nil {
+			fmt.Fprintf(&b, ":%s:%s", item.Permission.Action, item.Permission.Target)
+		}
+	}
+	return b.String()
+}
+
+func (s *Server) pendingForConversation(convID string) []cmdrunner.PendingInteraction {
+	s.pendingMu.RLock()
+	defer s.pendingMu.RUnlock()
+	src := s.pendingByConv[convID]
+	if len(src) == 0 {
+		return []cmdrunner.PendingInteraction{}
+	}
+	out := make([]cmdrunner.PendingInteraction, len(src))
+	copy(out, src)
+	return out
+}
+
+func (s *Server) refreshPendingIfStale(ctx context.Context, maxAge time.Duration) {
+	s.pendingMu.RLock()
+	fresh := !s.pendingSyncAt.IsZero() && time.Since(s.pendingSyncAt) < maxAge
+	s.pendingMu.RUnlock()
+	if fresh {
+		return
+	}
+	s.syncPendingInteractions(ctx, false)
+}
+
+func (s *Server) syncPendingInteractions(ctx context.Context, emitAlerts bool) {
+	if s.runner == nil {
+		return
+	}
+	live, err := s.runner.ListPendingInteractions(ctx)
+	if err != nil {
+		return
+	}
+	if live == nil {
+		live = make(map[string][]cmdrunner.PendingInteraction)
+	}
+
+	s.pendingMu.Lock()
+	prev := s.pendingByConv
+	if prev == nil {
+		prev = make(map[string][]cmdrunner.PendingInteraction)
+	}
+	if s.pendingAlerted == nil {
+		s.pendingAlerted = make(map[string]struct{})
+	}
+
+	changedConvs := make(map[string][]cmdrunner.PendingInteraction)
+	for convID, newList := range live {
+		if pendingInteractionsSignature(prev[convID]) != pendingInteractionsSignature(newList) {
+			cp := make([]cmdrunner.PendingInteraction, len(newList))
+			copy(cp, newList)
+			changedConvs[convID] = cp
+		}
+	}
+	for convID, oldList := range prev {
+		if len(oldList) > 0 && len(live[convID]) == 0 {
+			changedConvs[convID] = []cmdrunner.PendingInteraction{}
+		}
+	}
+
+	// Track newly discovered waiting interactions for push alert deduplication.
+	activeKeys := make(map[string]struct{})
+	var newAlerts []cmdrunner.PendingInteraction
+	for convID, list := range live {
+		for _, item := range list {
+			key := fmt.Sprintf("%s:%d:%s", convID, item.StepIndex, item.Kind)
+			activeKeys[key] = struct{}{}
+			if _, seen := s.pendingAlerted[key]; !seen {
+				s.pendingAlerted[key] = struct{}{}
+				if emitAlerts {
+					newAlerts = append(newAlerts, item)
+				}
+			}
+		}
+	}
+	// Prune resolved keys so future waiting steps at the same index can alert again if needed.
+	for key := range s.pendingAlerted {
+		if _, alive := activeKeys[key]; !alive {
+			delete(s.pendingAlerted, key)
+		}
+	}
+
+	s.pendingByConv = live
+	s.pendingSyncAt = time.Now()
+	s.pendingMu.Unlock()
+
+	for convID, list := range changedConvs {
+		s.broadcast("session:"+convID, "interaction.updated", map[string]any{
+			"conversationId":      convID,
+			"pendingInteractions": list,
+		})
+		if card, err := s.buildSessionCard(convID); err == nil {
+			s.broadcast("$global", "session.summary", card)
+		}
+	}
+
+	for _, item := range newAlerts {
+		s.emitPendingInteractionAlert(item)
+	}
+}
+
+func (s *Server) emitPendingInteractionAlert(item cmdrunner.PendingInteraction) {
+	title := "等待授权确认"
+	workspace := ""
+	if card, err := s.buildSessionCard(item.ConversationID); err == nil {
+		if card.Title != "" {
+			title = card.Title
+		}
+		workspace = card.Workspace.Label
+	}
+	body := "Agent 正在等待你的授权确认，点击进入手机端审批"
+	if item.Kind == "permission" && item.Permission != nil {
+		desc := item.Permission.ActionDescription
+		if desc == "" {
+			desc = item.Permission.Action
+		}
+		if item.Permission.Target != "" {
+			body = fmt.Sprintf("请求授权：%s\n%s", desc, item.Permission.Target)
+		} else if desc != "" {
+			body = fmt.Sprintf("请求授权：%s", desc)
+		}
+	} else if item.Kind == "ask_question" && item.AskQuestion != nil && len(item.AskQuestion.Questions) > 0 {
+		body = item.AskQuestion.Questions[0].Question
+	}
+	s.emitAlert(notifier.Alert{
+		AlertID:        fmt.Sprintf("perm_%s_%d_%s", item.ConversationID, item.StepIndex, item.Kind),
+		Kind:           "NEED_CONFIRM",
+		ConversationID: item.ConversationID,
+		Title:          title,
+		Workspace:      workspace,
+		Body:           body,
+		CreatedAt:      time.Now().Unix(),
+	})
 }
 
 func quotaSignature(snap *quotamonitor.QuotaSnapshot) string {
@@ -667,11 +852,28 @@ func (s *Server) validateToken(token string) bool {
 	if token == "" {
 		return false
 	}
-	if s.cfg.BootstrapToken != "" && token == s.cfg.BootstrapToken {
+	bootstrap := s.currentBootstrapToken()
+	if bootstrap != "" && subtle.ConstantTimeCompare([]byte(token), []byte(bootstrap)) == 1 {
 		return true
 	}
 	ok, err := s.store.ValidateTokenHash(config.HashToken(token))
 	return err == nil && ok
+}
+
+func isValidConversationID(convID string) bool {
+	convID = strings.TrimSpace(convID)
+	if convID == "" || convID == "." || convID == ".." {
+		return false
+	}
+	if strings.Contains(convID, "..") || strings.ContainsAny(convID, `/\`) {
+		return false
+	}
+	for _, r := range convID {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -780,6 +982,7 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		if p.Limit <= 0 {
 			p.Limit = 100
 		}
+		s.refreshPendingIfStale(ctx, 2*time.Second)
 		data, err := s.buildSessionList(p.Mode, p.Limit)
 		if err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
@@ -806,9 +1009,10 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			BeforeStep     int    `json:"beforeStep"`
 			Limit          int    `json:"limit"`
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ConversationID == "" {
-			return errResp("INVALID_ARGS", "conversationId is required")
+		if err := json.Unmarshal(req.Params, &p); err != nil || !isValidConversationID(p.ConversationID) {
+			return errResp("INVALID_ARGS", "valid conversationId is required")
 		}
+		s.refreshPendingIfStale(ctx, 1500*time.Millisecond)
 		card, err := s.buildSessionCard(p.ConversationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -823,10 +1027,11 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		s.enrichStepsWithSpeed(ctx, p.ConversationID, steps, true)
 		artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", p.ConversationID))
 		return okResp(map[string]any{
-			"session":   card,
-			"steps":     steps,
-			"hasMore":   hasMore,
-			"artifacts": artifacts,
+			"session":             card,
+			"steps":               steps,
+			"hasMore":             hasMore,
+			"artifacts":           artifacts,
+			"pendingInteractions": s.pendingForConversation(p.ConversationID),
 		})
 
 	case "sessions.create":
@@ -848,8 +1053,8 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			ConversationID string `json:"conversationId"`
 			Content        string `json:"content"`
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ConversationID == "" || strings.TrimSpace(p.Content) == "" {
-			return errResp("INVALID_ARGS", "conversationId and content are required")
+		if err := json.Unmarshal(req.Params, &p); err != nil || !isValidConversationID(p.ConversationID) || strings.TrimSpace(p.Content) == "" {
+			return errResp("INVALID_ARGS", "valid conversationId and content are required")
 		}
 		res, err := s.runner.SendMessage(ctx, p.ConversationID, p.Content)
 		if err != nil {
@@ -860,14 +1065,39 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		}
 		return okResp(res)
 
+	case "sessions.respondInteraction":
+		var dec cmdrunner.InteractionDecision
+		if err := json.Unmarshal(req.Params, &dec); err != nil || !isValidConversationID(dec.ConversationID) || dec.StepIndex < 0 {
+			return errResp("INVALID_ARGS", "valid conversationId and stepIndex are required")
+		}
+		if dec.Kind == "" {
+			dec.Kind = "permission"
+		}
+		if dec.Kind != "permission" && dec.Kind != "ask_question" {
+			return errResp("INVALID_ARGS", "kind must be permission or ask_question")
+		}
+		if err := s.runner.RespondInteraction(ctx, dec); err != nil {
+			if errors.Is(err, cmdrunner.ErrDesktopOffline) {
+				return errResp("DESKTOP_OFFLINE", "Mac 端 Antigravity 桌面进程当前未运行，无法提交授权决策")
+			}
+			return errResp("COMMAND_FAILED", err.Error())
+		}
+		s.syncPendingInteractions(ctx, false)
+		return okResp(map[string]any{
+			"handled":             true,
+			"conversationId":      dec.ConversationID,
+			"stepIndex":           dec.StepIndex,
+			"pendingInteractions": s.pendingForConversation(dec.ConversationID),
+		})
+
 	case "sessions.pin":
 		var p struct {
 			ConversationID string `json:"conversationId"`
 			Pinned         bool   `json:"pinned"`
 			Order          int    `json:"order"`
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ConversationID == "" {
-			return errResp("INVALID_ARGS", "conversationId is required")
+		if err := json.Unmarshal(req.Params, &p); err != nil || !isValidConversationID(p.ConversationID) {
+			return errResp("INVALID_ARGS", "valid conversationId is required")
 		}
 		if err := s.store.SetPinned(p.ConversationID, p.Pinned, p.Order); err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
@@ -882,8 +1112,8 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			ConversationID string `json:"conversationId"`
 			StepIndex      int    `json:"stepIndex"`
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ConversationID == "" {
-			return errResp("INVALID_ARGS", "conversationId is required")
+		if err := json.Unmarshal(req.Params, &p); err != nil || !isValidConversationID(p.ConversationID) {
+			return errResp("INVALID_ARGS", "valid conversationId is required")
 		}
 		if err := s.store.MarkRead(p.ConversationID, p.StepIndex); err != nil {
 			return errResp("INTERNAL_ERROR", err.Error())
@@ -897,8 +1127,8 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 		var p struct {
 			ConversationID string `json:"conversationId"`
 		}
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ConversationID == "" {
-			return errResp("INVALID_ARGS", "conversationId is required")
+		if err := json.Unmarshal(req.Params, &p); err != nil || !isValidConversationID(p.ConversationID) {
+			return errResp("INVALID_ARGS", "valid conversationId is required")
 		}
 		items, err := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", p.ConversationID))
 		if err != nil {
@@ -974,7 +1204,7 @@ func (s *Server) handleFileRaw(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) allowedRootsForConversation(convID string) ([]string, error) {
-	if convID == "" || strings.Contains(convID, "..") || strings.Contains(convID, "/") {
+	if !isValidConversationID(convID) {
 		return nil, filesandbox.ErrPathForbidden
 	}
 	roots := []string{filepath.Join(s.cfg.AntigravityDir, "brain", convID)}
@@ -1021,8 +1251,15 @@ func (s *Server) handleMuxWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Auto-subscribe $global when authenticated via HTTP Authorization header.
-	if c.authed {
+	// Unauthenticated connections must complete first-frame auth before deadline.
+	if c.isAuthed() {
 		s.subscribeClient(c, "$global")
+	} else {
+		timeout := s.wsAuthTimeoutDur
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	}
 
 	for {
@@ -1030,9 +1267,10 @@ func (s *Server) handleMuxWS(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&in); err != nil {
 			return
 		}
-		if !c.authed {
+		if !c.isAuthed() {
 			if in.Type == "auth" && s.validateToken(in.Token) {
-				c.authed = true
+				c.setAuthed(true)
+				_ = conn.SetReadDeadline(time.Time{})
 				s.subscribeClient(c, "$global")
 				continue
 			}
@@ -1054,6 +1292,16 @@ func (s *Server) handleMuxWS(w http.ResponseWriter, r *http.Request) {
 			})
 		case "sub":
 			if in.Channel != "" {
+				if strings.HasPrefix(in.Channel, "session:") {
+					convID := strings.TrimPrefix(in.Channel, "session:")
+					if !isValidConversationID(convID) {
+						c.trySend(MuxFrame{
+							Type:  "error",
+							Error: &RPCError{Code: "INVALID_ARGS", Message: "invalid session channel"},
+						})
+						continue
+					}
+				}
 				s.subscribeClient(c, in.Channel)
 			}
 		case "unsub":
@@ -1065,6 +1313,12 @@ func (s *Server) handleMuxWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) subscribeClient(c *wsClient, channel string) {
+	if channel == "$global" {
+		s.refreshPendingIfStale(context.Background(), 2*time.Second)
+	} else if strings.HasPrefix(channel, "session:") {
+		s.refreshPendingIfStale(context.Background(), 1500*time.Millisecond)
+	}
+
 	c.mu.Lock()
 	c.subs[channel] = true
 	c.mu.Unlock()
@@ -1089,10 +1343,11 @@ func (s *Server) subscribeClient(c *wsClient, channel string) {
 		s.enrichStepsWithSpeed(context.Background(), convID, steps, true)
 		artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", convID))
 		payload = map[string]any{
-			"session":   card,
-			"steps":     steps,
-			"hasMore":   hasMore,
-			"artifacts": artifacts,
+			"session":             card,
+			"steps":               steps,
+			"hasMore":             hasMore,
+			"artifacts":           artifacts,
+			"pendingInteractions": s.pendingForConversation(convID),
 		}
 	}
 
@@ -1120,6 +1375,18 @@ func (s *Server) broadcast(channel, event string, data any) {
 			})
 		}
 	}
+}
+
+func (c *wsClient) isAuthed() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.authed
+}
+
+func (c *wsClient) setAuthed(v bool) {
+	c.mu.Lock()
+	c.authed = v
+	c.mu.Unlock()
 }
 
 func (c *wsClient) isSubscribed(channel string) bool {
@@ -1225,6 +1492,11 @@ func (s *Server) assembleCard(raw agyreader.RawSummary, meta statestore.SessionM
 		latestIsUser = st.LatestStepType == "USER_INPUT"
 	}
 
+	pendingCount := len(s.pendingForConversation(raw.ConversationID))
+	if pendingCount > 0 {
+		needsConfirm = true
+	}
+
 	artifacts, _ := filesandbox.ListArtifacts(filepath.Join(s.cfg.AntigravityDir, "brain", raw.ConversationID))
 	unread := latestStepIdx > meta.LastReadStepIndex && meta.LastReadStepIndex >= 0 && !latestIsUser
 	if meta.LastReadStepIndex < 0 && raw.StepCount > 0 && needsConfirm {
@@ -1232,27 +1504,28 @@ func (s *Server) assembleCard(raw agyreader.RawSummary, meta statestore.SessionM
 	}
 
 	return SessionCard{
-		ConversationID:   raw.ConversationID,
-		Title:            raw.Title,
-		Preview:          preview,
-		StepCount:        raw.StepCount,
-		LastModifiedUnix: raw.LastModifiedUnix,
-		Workspace:        raw.Workspace,
-		Status:           raw.Status,
-		Running:          raw.Running,
-		SubagentCount:    raw.SubagentCount,
-		ArtifactCount:    len(artifacts),
-		Model:            model,
-		ModelDisplay:     modelDisplay,
-		Pinned:           meta.Pinned,
-		PinnedOrder:      meta.PinnedOrder,
-		Unread:           unread,
-		NeedsConfirm:     needsConfirm,
+		ConversationID:          raw.ConversationID,
+		Title:                   raw.Title,
+		Preview:                 preview,
+		StepCount:               raw.StepCount,
+		LastModifiedUnix:        raw.LastModifiedUnix,
+		Workspace:               raw.Workspace,
+		Status:                  raw.Status,
+		Running:                 raw.Running,
+		SubagentCount:           raw.SubagentCount,
+		ArtifactCount:           len(artifacts),
+		Model:                   model,
+		ModelDisplay:            modelDisplay,
+		Pinned:                  meta.Pinned,
+		PinnedOrder:             meta.PinnedOrder,
+		Unread:                  unread,
+		NeedsConfirm:            needsConfirm,
+		PendingInteractionCount: pendingCount,
 	}
 }
 
 func isIdempotentMethod(method string) bool {
-	return method == "sessions.create" || method == "sessions.sendMessage"
+	return method == "sessions.create" || method == "sessions.sendMessage" || method == "sessions.respondInteraction"
 }
 
 func (s *Server) getIdempotent(reqID string) (RPCResponse, bool) {

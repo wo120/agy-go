@@ -73,5 +73,10 @@ st, fresp = req_json("GET", "/api/v1/files/content?convId=smoke-test&path=/etc/p
 assert st == 200 and fresp.get("ok") is False and fresp.get("error", {}).get("code") == "PATH_FORBIDDEN", f"sandbox failed to block /etc/passwd: {fresp}"
 print("[PASS] filesandbox guard: /etc/passwd blocked with PATH_FORBIDDEN")
 
+# 6. Conversation ID traversal must be rejected on artifacts.list
+st, aresp = req_json("POST", "/api/v1/rpc", {"requestId": "smoke_trav", "method": "artifacts.list", "params": {"conversationId": "../../"}})
+assert st == 200 and aresp.get("ok") is False and aresp.get("error", {}).get("code") == "INVALID_ARGS", f"artifacts.list traversal not blocked: {aresp}"
+print("[PASS] convId guard: artifacts.list traversal blocked with INVALID_ARGS")
+
 print("=== Live agy-remote smoke check PASSED ===")
 PY
