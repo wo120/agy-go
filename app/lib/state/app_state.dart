@@ -711,6 +711,7 @@ class ChatSessionState {
     this.session,
     this.steps = const [],
     this.rows = const [],
+    this.todoSteps = const [],
     this.artifacts = const [],
     this.pendingInteractions = const [],
     this.hasMore = false,
@@ -723,6 +724,7 @@ class ChatSessionState {
   final SessionCard? session;
   final List<TranscriptStep> steps;
   final List<ChatRow> rows;
+  final List<TodoStepItem> todoSteps;
   final List<ArtifactItem> artifacts;
   final List<PendingInteraction> pendingInteractions;
   final bool hasMore;
@@ -735,6 +737,7 @@ class ChatSessionState {
     SessionCard? session,
     List<TranscriptStep>? steps,
     List<ChatRow>? rows,
+    List<TodoStepItem>? todoSteps,
     List<ArtifactItem>? artifacts,
     List<PendingInteraction>? pendingInteractions,
     bool? hasMore,
@@ -748,6 +751,7 @@ class ChatSessionState {
       session: session ?? this.session,
       steps: steps ?? this.steps,
       rows: rows ?? this.rows,
+      todoSteps: todoSteps ?? this.todoSteps,
       artifacts: artifacts ?? this.artifacts,
       pendingInteractions: pendingInteractions ?? this.pendingInteractions,
       hasMore: hasMore ?? this.hasMore,
@@ -808,6 +812,24 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
       }
     });
 
+    ref.listen<SessionsUiState>(sessionsStateProvider, (_, next) {
+      if (_disposed) return;
+      final updated = _findCardInList(next, conversationId);
+      if (updated == null) return;
+      final prev = state.session;
+      if (prev == null ||
+          prev.needsConfirm != updated.needsConfirm ||
+          prev.pendingInteractionCount != updated.pendingInteractionCount ||
+          prev.running != updated.running ||
+          prev.stepCount != updated.stepCount ||
+          prev.title != updated.title ||
+          prev.artifactCount != updated.artifactCount) {
+        final nextState = state.copyWith(session: updated);
+        state = nextState;
+        _saveChatCache(conversationId, nextState);
+      }
+    });
+
     ref.onDispose(() {
       _disposed = true;
       _httpFallbackTimer?.cancel();
@@ -844,7 +866,10 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
   }
 
   SessionCard? _findCachedCard(String conversationId) {
-    final list = ref.read(sessionsStateProvider);
+    return _findCardInList(ref.read(sessionsStateProvider), conversationId);
+  }
+
+  SessionCard? _findCardInList(SessionsUiState list, String conversationId) {
     for (final c in list.pinned) {
       if (c.conversationId == conversationId) return c;
     }
@@ -896,10 +921,12 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
       final res = await c.getSession(conversationId);
       if (_disposed) return;
       final rows = TranscriptReducer.reduce(res.steps);
+      final todoSteps = TranscriptReducer.extractLatestTodoSteps(res.steps);
       final nextState = state.copyWith(
         session: res.session,
         steps: res.steps,
         rows: rows,
+        todoSteps: todoSteps,
         artifacts: res.artifacts,
         pendingInteractions: res.pendingInteractions,
         hasMore: res.hasMore,
@@ -930,7 +957,12 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
     try {
       await c.sendMessage(arg, trimmed, requestId: reqId);
       if (_disposed) return;
-      state = state.copyWith(sending: false);
+      final clearedSession = state.session != null && state.session!.needsConfirm && state.pendingInteractions.isEmpty
+          ? state.session!.copyWith(needsConfirm: false)
+          : state.session;
+      final nextState = state.copyWith(session: clearedSession, sending: false);
+      state = nextState;
+      _saveChatCache(arg, nextState);
     } on BridgeRemoteException catch (e) {
       if (_disposed) return;
       state = state.copyWith(sending: false, error: e.message);
@@ -963,7 +995,12 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         requestId: reqId,
       );
       if (_disposed) return;
+      final updatedSession = state.session?.copyWith(
+        pendingInteractionCount: remaining.length,
+        needsConfirm: remaining.isNotEmpty ? true : false,
+      );
       final nextState = state.copyWith(
+        session: updatedSession,
         pendingInteractions: remaining,
         respondingInteraction: false,
         clearError: true,
@@ -998,7 +1035,12 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
         requestId: reqId,
       );
       if (_disposed) return;
+      final updatedSession = state.session?.copyWith(
+        pendingInteractionCount: remaining.length,
+        needsConfirm: remaining.isNotEmpty ? true : false,
+      );
       final nextState = state.copyWith(
+        session: updatedSession,
         pendingInteractions: remaining,
         respondingInteraction: false,
         clearError: true,
@@ -1038,6 +1080,7 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
           session: session,
           steps: steps,
           rows: TranscriptReducer.reduce(steps),
+          todoSteps: TranscriptReducer.extractLatestTodoSteps(steps),
           artifacts: artifacts,
           pendingInteractions: pending,
           hasMore: (d['hasMore'] as bool?) ?? state.hasMore,
@@ -1065,9 +1108,22 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
           merged[s.stepIndex] = s;
         }
         final sorted = merged.values.toList()..sort((a, b) => a.stepIndex.compareTo(b.stepIndex));
+        SessionCard? nextSession = d['session'] is Map<String, dynamic>
+            ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
+            : state.session;
+        if (d['session'] == null &&
+            nextSession != null &&
+            nextSession.needsConfirm &&
+            state.pendingInteractions.isEmpty &&
+            sorted.isNotEmpty &&
+            sorted.last.type == 'USER_INPUT') {
+          nextSession = nextSession.copyWith(needsConfirm: false);
+        }
         final nextState = state.copyWith(
+          session: nextSession,
           steps: sorted,
           rows: TranscriptReducer.reduce(sorted),
+          todoSteps: TranscriptReducer.extractLatestTodoSteps(sorted),
         );
         state = nextState;
         _saveChatCache(arg, nextState);
@@ -1088,7 +1144,16 @@ class ChatSessionNotifier extends AutoDisposeFamilyNotifier<ChatSessionState, St
             .whereType<Map<String, dynamic>>()
             .map(PendingInteraction.fromJson)
             .toList();
-        final nextState = state.copyWith(pendingInteractions: pending);
+        SessionCard? nextSession = d['session'] is Map<String, dynamic>
+            ? SessionCard.fromJson(d['session'] as Map<String, dynamic>)
+            : state.session;
+        if (d['session'] == null && nextSession != null) {
+          nextSession = nextSession.copyWith(
+            pendingInteractionCount: pending.length,
+            needsConfirm: pending.isNotEmpty ? true : (nextSession.pendingInteractionCount > 0 ? false : nextSession.needsConfirm),
+          );
+        }
+        final nextState = state.copyWith(session: nextSession, pendingInteractions: pending);
         state = nextState;
         _saveChatCache(arg, nextState);
       }

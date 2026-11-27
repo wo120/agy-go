@@ -594,7 +594,7 @@ class _NewSessionSheetState extends State<NewSessionSheet> {
               ],
               const SizedBox(height: 16),
 
-              // Primary CTA button (crisp solid emerald-teal)
+              // Primary CTA button (crisp solid electric blue)
               SizedBox(
                 width: double.infinity,
                 height: 46,

@@ -845,6 +845,104 @@ void main() {
     expect(decisions.first.scope, 'once');
     expect(decisions.first.feedback, '改用 pgrep');
     expect(find.byKey(const Key('pending_interaction_dock')), findsNothing);
+    expect(find.text('一键确认开工'), findsNothing);
+  });
+
+  testWidgets('ChatScreen hides 一键确认开工 after session.summary clears needsConfirm', (tester) async {
+    const initialCard = SessionCard(
+      conversationId: 'c-confirm',
+      title: '方案审核',
+      preview: '请确认方案',
+      stepCount: 2,
+      lastModifiedUnix: 1795597642,
+      workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+      status: 'IDLE',
+      running: false,
+      subagentCount: 0,
+      artifactCount: 1,
+      pinned: false,
+      pinnedOrder: 0,
+      unread: false,
+      needsConfirm: true,
+    );
+
+    final container = ProviderContainer(
+      overrides: [
+        hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    container.read(sessionsStateProvider.notifier).upsertCard(initialCard);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-confirm'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('一键确认开工'), findsOneWidget);
+
+    // Simulates $global session.summary clearing needsConfirm after user confirmation or permission resolution.
+    container.read(sessionsStateProvider.notifier).upsertCard(
+          initialCard.copyWith(needsConfirm: false, pendingInteractionCount: 0),
+        );
+    await tester.pumpAndSettle();
+
+    expect(find.text('一键确认开工'), findsNothing);
+  });
+
+  testWidgets('ChatScreen renders live todo checklist banner from update_steps', (tester) async {
+    const steps = [
+      TranscriptStep(
+        stepIndex: 0,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        createdAtUnix: 1795597638,
+        toolCalls: [
+          ToolCallItem(
+            name: 'update_steps',
+            args: {
+              'steps': [
+                {'status': 'done', 'title': '核查服务端广播与客户端状态模型'},
+                {'status': 'in_progress', 'title': '渲染手机端待办清单'},
+                {'status': 'pending', 'title': '运行全量验证'},
+              ],
+            },
+          ),
+        ],
+      ),
+    ];
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          hostConnectionProvider.overrideWith(_FakeHostNotifier.new),
+          chatSessionProvider.overrideWith(() => _FakeTodoChatNotifier(steps)),
+        ],
+        child: MaterialApp(
+          theme: buildAgyTheme(),
+          home: const ChatScreen(conversationId: 'c-todo'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('待办任务'), findsOneWidget);
+    expect(find.text('1/3'), findsOneWidget);
+    expect(find.text('核查服务端广播与客户端状态模型'), findsOneWidget);
+    expect(find.text('渲染手机端待办清单'), findsOneWidget);
+    expect(find.text('运行全量验证'), findsOneWidget);
+
+    await tester.tap(find.text('待办任务'));
+    await tester.pumpAndSettle();
+    expect(find.text('渲染手机端待办清单'), findsNothing);
   });
 
   testWidgets('SessionSummaryCard displays 待授权 badge when pendingInteractionCount > 0', (tester) async {
@@ -1222,5 +1320,38 @@ class _PermissionChatSessionNotifier extends ChatSessionNotifier {
   }) async {
     decisions.add((allow: allow, scope: scope, feedback: feedback));
     state = state.copyWith(pendingInteractions: const []);
+  }
+}
+
+class _FakeTodoChatNotifier extends ChatSessionNotifier {
+  _FakeTodoChatNotifier(this.initialSteps);
+
+  final List<TranscriptStep> initialSteps;
+
+  @override
+  ChatSessionState build(String conversationId) {
+    return ChatSessionState(
+      session: const SessionCard(
+        conversationId: 'c-todo',
+        title: '待办任务测试',
+        preview: '进行中',
+        stepCount: 1,
+        lastModifiedUnix: 1795597638,
+        workspace: WorkspaceInfo(kind: 'workspace', label: 'antigravity-mobile'),
+        status: 'RUNNING',
+        running: true,
+        subagentCount: 0,
+        artifactCount: 0,
+        pinned: false,
+        pinnedOrder: 0,
+        unread: false,
+        needsConfirm: false,
+        pendingInteractionCount: 0,
+      ),
+      steps: initialSteps,
+      rows: TranscriptReducer.reduce(initialSteps),
+      todoSteps: TranscriptReducer.extractLatestTodoSteps(initialSteps),
+      loading: false,
+    );
   }
 }

@@ -472,7 +472,7 @@ class _QuotaDashboardCardState extends ConsumerState<QuotaDashboardCard> {
                           const SizedBox(height: 4),
                           _MicroGaugeBar(
                             pct: (((m.streamTps > 0 ? m.streamTps : m.e2eTps) / maxRate) * 100).round().clamp(6, 100),
-                            fillColor: m.poolId == 'gemini' ? AgyColors.info : AgyColors.accentBright,
+                            fillColor: m.poolId == 'gemini' ? AgyColors.accentBright : AgyColors.aiAccentBright,
                             height: 4,
                           ),
                           const SizedBox(height: 3),
@@ -527,8 +527,8 @@ class _PoolTelemetryTile extends StatelessWidget {
 
   Color get _poolColor {
     if (pool.level == 'warning') return AgyColors.warning;
-    if (pool.poolId == 'gemini') return AgyColors.info;
-    return AgyColors.accentBright;
+    if (pool.poolId == 'gemini') return AgyColors.accentBright;
+    return AgyColors.aiAccentBright;
   }
 
   @override

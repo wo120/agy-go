@@ -119,6 +119,58 @@ void main() {
       expect(dec.questions.first.multiSelect, isFalse);
     });
 
+    test('extracts latest update_steps todo list and omits it from process capsules', () {
+      const steps = [
+        TranscriptStep(
+          stepIndex: 0,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          createdAtUnix: 1000,
+          toolCalls: [
+            ToolCallItem(
+              name: 'update_steps',
+              args: {
+                'steps': '[{"status":"in_progress","title":"第一步"},{"status":"pending","title":"第二步"}]',
+              },
+            ),
+          ],
+        ),
+        TranscriptStep(
+          stepIndex: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          createdAtUnix: 1001,
+          thinking: '继续推进',
+          toolCalls: [
+            ToolCallItem(name: 'read_file'),
+            ToolCallItem(
+              name: 'update_steps',
+              args: {
+                'steps': [
+                  {'status': 'done', 'title': '第一步'},
+                  {'status': 'in_progress', 'title': '第二步'},
+                ],
+              },
+            ),
+          ],
+        ),
+      ];
+
+      final rows = TranscriptReducer.reduce(steps);
+      expect(rows.length, 1);
+      final proc = rows.first as ProcessGroupRow;
+      expect(proc.toolNames, ['read_file']);
+
+      final todos = TranscriptReducer.extractLatestTodoSteps(steps);
+      expect(todos.length, 2);
+      expect(todos[0].title, '第一步');
+      expect(todos[0].status, 'done');
+      expect(todos[1].title, '第二步');
+      expect(todos[1].status, 'in_progress');
+    });
+
     test('strips outer USER_REQUEST while preserving metadata and local send time', () {
       const steps = [
         TranscriptStep(

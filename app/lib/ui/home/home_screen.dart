@@ -846,9 +846,9 @@ class SessionSummaryCard extends StatelessWidget {
                 AgyTag(
                   icon: Icons.account_tree_outlined,
                   label: '${card.subagentCount} 子代理',
-                  color: AgyColors.info,
-                  backgroundColor: AgyColors.infoTint,
-                  borderColor: AgyColors.info.withValues(alpha: 0.3),
+                  color: AgyColors.aiAccentBright,
+                  backgroundColor: AgyColors.aiAccentTint,
+                  borderColor: AgyColors.aiAccentBorder,
                 ),
               if (card.artifactCount > 0)
                 AgyTag(

@@ -340,6 +340,12 @@ func compactStepForClient(s TranscriptStep) TranscriptStep {
 		switch tc.Name {
 		case "ask_question":
 			compacted = append(compacted, tc)
+		case "update_steps":
+			var slimArgs map[string]any
+			if rawSteps, ok := tc.Args["steps"]; ok {
+				slimArgs = map[string]any{"steps": rawSteps}
+			}
+			compacted = append(compacted, ToolCall{Name: tc.Name, Args: slimArgs})
 		case "write_file", "edit_file":
 			var slimArgs map[string]any
 			if meta, ok := tc.Args["ArtifactMetadata"]; ok {
@@ -534,6 +540,13 @@ func normalizeToolCallArgs(toolCalls []ToolCall) {
 				var parsed map[string]any
 				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
 					args["ArtifactMetadata"] = parsed
+				}
+			}
+		case "update_steps":
+			if raw, ok := args["steps"].(string); ok {
+				var parsed []any
+				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+					args["steps"] = parsed
 				}
 			}
 		}

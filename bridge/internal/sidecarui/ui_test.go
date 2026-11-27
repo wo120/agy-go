@@ -107,6 +107,10 @@ func TestSidecarUIStatusAndTokenAuth(t *testing.T) {
 	if !strings.Contains(string(htmlBytes), "输出速度监控 (TPS · 5h)") {
 		t.Fatalf("expected Sidecar HTML to contain TPS monitor card")
 	}
+	if !strings.Contains(string(htmlBytes), "--bg: #090b0e;") ||
+		!strings.Contains(string(htmlBytes), "--accent: #2563eb;") {
+		t.Fatalf("expected Sidecar HTML to use unified Precision Graphite + Electric Blue palette")
+	}
 	if !strings.Contains(string(htmlBytes), `headers: { "x-sidecar-token": SIDECAR_TOKEN }`) ||
 		!strings.Contains(string(htmlBytes), "escHtml(e)") ||
 		!strings.Contains(string(htmlBytes), "escHtml(p.displayName)") {

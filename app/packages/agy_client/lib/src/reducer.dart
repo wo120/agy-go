@@ -117,6 +117,16 @@ class DecisionQuestion {
   final bool multiSelect;
 }
 
+class TodoStepItem {
+  const TodoStepItem({
+    required this.title,
+    required this.status,
+  });
+
+  final String title;
+  final String status;
+}
+
 class DecisionPromptRow extends ChatRow {
   const DecisionPromptRow({
     required String keyId,
@@ -214,6 +224,9 @@ class TranscriptReducer {
                 );
               }
             }
+          } else if (tc.name == 'update_steps') {
+            // Rendered in the live todo checklist panel instead of a noisy tool capsule.
+            continue;
           } else if (tc.name.isNotEmpty) {
             nonQuestionTools.add(tc.name);
           }
@@ -268,6 +281,30 @@ class TranscriptReducer {
 
     flushProcess();
     return rows;
+  }
+
+  /// Extracts the most recent checklist from `update_steps` tool calls across [steps].
+  static List<TodoStepItem> extractLatestTodoSteps(List<TranscriptStep> steps) {
+    List<TodoStepItem> latest = const [];
+    for (final step in steps) {
+      if (step.type != 'PLANNER_RESPONSE') continue;
+      for (final tc in step.toolCalls) {
+        if (tc.name != 'update_steps') continue;
+        final rawList = _decodeJsonList(tc.args['steps']);
+        final parsed = <TodoStepItem>[];
+        for (final entry in rawList.whereType<Map>()) {
+          final title = entry['title'] is String ? (entry['title'] as String).trim() : '';
+          final status = entry['status'] is String ? (entry['status'] as String).trim() : 'pending';
+          if (title.isNotEmpty) {
+            parsed.add(TodoStepItem(title: title, status: status.isEmpty ? 'pending' : status));
+          }
+        }
+        if (parsed.isNotEmpty) {
+          latest = parsed;
+        }
+      }
+    }
+    return latest;
   }
 
   static const List<String> _userInputTrailingTags = [

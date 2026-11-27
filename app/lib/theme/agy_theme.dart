@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
-/// Original Precision Console design tokens for AGY Go.
-/// Pure carbon/graphite layering with emerald-cyan accents and hairline borders.
+/// Precision Console design tokens for AGY Go (Precision Graphite + Electric Blue).
+/// Pure carbon/graphite layering with electric-blue primary accents, isolated semantic telemetry,
+/// and minimal starlight-indigo highlights reserved for AI thinking / subagents.
 class AgyColors {
-  // Neutral carbon-slate surfaces (zero purple tint)
+  // Neutral carbon-slate surfaces (zero color cast)
   static const bgCanvas = Color(0xFF090B0E);
   static const bgElevated = Color(0xFF101318);
   static const bgSubtle = Color(0xFF161B23);
@@ -14,20 +15,26 @@ class AgyColors {
   // Crisp architectural hairlines
   static const borderHairline = Color(0xFF1E2430);
   static const borderStrong = Color(0xFF2B3444);
-  static const borderAccent = Color(0x6614B8A6);
+  static const borderAccent = Color(0x663B82F6);
 
   // Typography ink hierarchy
   static const textPrimary = Color(0xFFF1F5F9);
   static const textSecondary = Color(0xFF94A3B8);
   static const textMuted = Color(0xFF64748B);
-  static const textOnAccent = Color(0xFF041513);
+  static const textOnAccent = Color(0xFFF8FAFC);
 
-  // Signature emerald-cyan brand accent
-  static const accent = Color(0xFF14B8A6);
-  static const accentBright = Color(0xFF2DD4BF);
-  static const accentTint = Color(0x1F14B8A6);
-  static const accentBubbleFill = Color(0xFF0E2524);
-  static const accentBubbleBorder = Color(0x552DD4BF);
+  // Signature electric-blue brand accent (decoupled from green online telemetry)
+  static const accent = Color(0xFF2563EB);
+  static const accentBright = Color(0xFF60A5FA);
+  static const accentTint = Color(0x1F3B82F6);
+  static const accentBubbleFill = Color(0xFF101F38);
+  static const accentBubbleBorder = Color(0x5560A5FA);
+
+  // Minimal starlight-indigo accent reserved for AI thinking / subagents / secondary pool
+  static const aiAccent = Color(0xFF818CF8);
+  static const aiAccentBright = Color(0xFFA5B4FC);
+  static const aiAccentTint = Color(0x1F818CF8);
+  static const aiAccentBorder = Color(0x55818CF8);
 
   // Semantic telemetry colors
   static const online = Color(0xFF22C55E);
@@ -55,7 +62,7 @@ ThemeData buildAgyTheme() {
       primary: AgyColors.accent,
       onPrimary: AgyColors.textOnAccent,
       secondary: AgyColors.info,
-      onSecondary: AgyColors.textOnAccent,
+      onSecondary: AgyColors.bgCanvas,
       surface: AgyColors.bgElevated,
       onSurface: AgyColors.textPrimary,
       error: AgyColors.danger,

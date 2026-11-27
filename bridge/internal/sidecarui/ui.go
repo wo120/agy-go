@@ -175,7 +175,7 @@ func BuildQRSVG(content string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" shape-rendering="crispEdges">`, dim, dim)
 	fmt.Fprintf(&b, `<rect width="%d" height="%d" rx="2" fill="#ffffff"/>`, dim, dim)
-	b.WriteString(`<path fill="#0b0c18" d="`)
+	b.WriteString(`<path fill="#090b0e" d="`)
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			if code.Black(x, y) {
@@ -205,99 +205,117 @@ const indexHTMLTemplate = `<!DOCTYPE html>
 <title>agy-remote</title>
 <style>
   :root {
-    --bg: #0a0b14;
-    --card: rgba(26, 28, 46, 0.82);
-    --border: rgba(255, 255, 255, 0.11);
-    --text: #f3f4f8;
-    --sub: #9ea4ba;
-    --muted: #727892;
-    --green: #34d399;
-    --purple: #a78bfa;
+    --bg: #090b0e;
+    --card: #101318;
+    --subtle: #161b23;
+    --active: #1e2530;
+    --code: #07090c;
+    --border: #1e2430;
+    --border-strong: #2b3444;
+    --text: #f1f5f9;
+    --sub: #94a3b8;
+    --muted: #64748b;
+    --accent: #2563eb;
+    --accent-hover: #3b82f6;
+    --accent-bright: #60a5fa;
+    --accent-tint: rgba(59, 130, 246, 0.14);
+    --accent-border: rgba(59, 130, 246, 0.40);
+    --ai: #a5b4fc;
+    --ai-tint: rgba(129, 140, 248, 0.14);
+    --ai-border: rgba(129, 140, 248, 0.34);
+    --green: #22c55e;
+    --green-tint: rgba(34, 197, 94, 0.14);
+    --green-border: rgba(34, 197, 94, 0.34);
+    --info: #38bdf8;
     --orange: #f59e0b;
-    --blue: #60a5fa;
+    --orange-tint: rgba(245, 158, 11, 0.14);
+    --orange-border: rgba(245, 158, 11, 0.36);
+    --bar-track: #212835;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     padding: 14px;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    background: radial-gradient(circle at 20% 0%, #221840 0%, #121024 45%, #0a0b14 100%);
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.06) 0%, rgba(9, 11, 14, 0) 140px), var(--bg);
     color: var(--text);
     min-height: 100vh;
   }
   .card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 16px;
+    border-radius: 12px;
     padding: 14px;
     margin-bottom: 12px;
-    backdrop-filter: blur(14px);
   }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-  .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .pill { font-size: 11px; padding: 3px 9px; border-radius: 99px; background: rgba(167,139,250,0.16); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
-  .pill.ok { background: rgba(52,211,153,0.16); color: var(--green); border-color: rgba(52,211,153,0.35); }
-  .pill.warn { background: rgba(245,158,11,0.16); color: var(--orange); border-color: rgba(245,158,11,0.35); }
+  .title { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; letter-spacing: -0.2px; }
+  .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--green); box-shadow: 0 0 0 3px var(--green-tint); }
+  .pill { font-size: 11px; padding: 3px 9px; border-radius: 6px; background: var(--accent-tint); color: var(--accent-bright); border: 1px solid var(--accent-border); font-weight: 500; }
+  .pill.ok { background: var(--green-tint); color: var(--green); border-color: var(--green-border); }
+  .pill.warn { background: var(--orange-tint); color: var(--orange); border-color: var(--orange-border); }
   a.btn {
     display: inline-block;
     text-decoration: none;
     cursor: pointer;
-    border: 1px solid rgba(96,165,250,0.5);
-    background: rgba(96,165,250,0.22);
-    color: var(--text);
+    border: 1px solid var(--accent-border);
+    background: var(--accent-tint);
+    color: var(--accent-bright);
     padding: 7px 11px;
     border-radius: 10px;
     font-size: 12px;
     font-weight: 600;
   }
-  a.btn:hover { background: rgba(96,165,250,0.32); }
+  a.btn:hover { background: rgba(59, 130, 246, 0.24); }
   .qr-wrap {
     margin: 12px auto;
     width: 196px;
     height: 196px;
     padding: 8px;
     background: #ffffff;
-    border-radius: 14px;
+    border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
   }
   .qr-wrap svg { width: 100%; height: 100%; display: block; }
-  .ep { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--blue); background: rgba(96,165,250,0.1); padding: 6px 8px; border-radius: 8px; margin-top: 6px; word-break: break-all; }
+  .ep { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--accent-bright); background: var(--code); border: 1px solid var(--border); padding: 6px 8px; border-radius: 8px; margin-top: 6px; word-break: break-all; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   button {
     cursor: pointer;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.07);
+    border: 1px solid var(--border-strong);
+    background: var(--subtle);
     color: var(--text);
     padding: 7px 11px;
     border-radius: 10px;
     font-size: 12px;
     font-weight: 600;
+    transition: background 120ms ease, border-color 120ms ease;
   }
-  button.primary { background: rgba(167,139,250,0.24); border-color: rgba(167,139,250,0.45); }
-  button:hover { background: rgba(255,255,255,0.14); }
-  .quota-row { display: grid; grid-template-columns: 34px 1fr 38px 86px; gap: 8px; align-items: center; font-size: 12px; margin-top: 6px; white-space: nowrap; }
-  .track { height: 5px; background: rgba(255,255,255,0.14); border-radius: 99px; overflow: hidden; }
-  .fill { height: 100%; background: #e5e7f0; border-radius: 99px; }
+  button.primary { background: var(--accent); border-color: var(--accent-hover); color: #f8fafc; }
+  button.primary:hover { background: var(--accent-hover); }
+  button:hover { background: var(--active); }
+  .quota-row { display: grid; grid-template-columns: 34px 1fr 38px 86px; gap: 8px; align-items: center; font-size: 12px; margin-top: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .track { height: 5px; background: var(--bar-track); border-radius: 99px; overflow: hidden; }
+  .fill { height: 100%; background: var(--accent-bright); border-radius: 99px; }
+  .fill.ai { background: var(--ai); }
   .fill.warn { background: var(--orange); }
   .warn-text { color: var(--orange); }
   .muted { color: var(--muted); font-size: 11.5px; }
   .tps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-  .tps-metric { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 8px 9px; }
+  .tps-metric { background: var(--subtle); border: 1px solid var(--border); border-radius: 10px; padding: 8px 9px; }
   .tps-val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
   .tps-val.hi { color: var(--green); }
-  .tps-val.sub { color: var(--blue); }
+  .tps-val.sub { color: var(--info); }
   .tps-unit { font-size: 10.5px; font-weight: 500; color: var(--muted); margin-left: 2px; }
-  .tps-latest { margin-top: 8px; padding: 7px 9px; border-radius: 9px; background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.22); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .tps-latest { margin-top: 8px; padding: 7px 9px; border-radius: 9px; background: var(--green-tint); border: 1px solid var(--green-border); font-size: 11.5px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .tps-model-row { margin-top: 8px; }
   .tps-model-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; }
   .tps-model-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tps-model-speed { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; color: var(--green); white-space: nowrap; }
+  .tps-model-speed { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; color: var(--accent-bright); white-space: nowrap; }
   .tps-model-sub { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
-  .fill.speed { background: linear-gradient(90deg, #34d399, #60a5fa); }
-  .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: #1e2138; border: 1px solid var(--border); padding: 7px 14px; border-radius: 99px; font-size: 12px; display: none; }
+  .fill.speed { background: linear-gradient(90deg, var(--accent-bright), var(--green)); }
+  .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--active); border: 1px solid var(--border-strong); padding: 7px 14px; border-radius: 10px; font-size: 12px; display: none; }
 </style>
 </head>
 <body>
@@ -403,10 +421,11 @@ function render(data) {
       const pct7 = Math.max(0, Math.min(100, Number(p.remaining7dPct) || 0));
       const w5 = pct5 < 40;
       const w7 = pct7 < 40;
+      const poolCls = p.poolId === "gemini" ? "" : "ai";
       return '<div style="margin-bottom:10px">' +
         '<div style="font-size:12.5px;font-weight:600">' + escHtml(p.displayName) + '</div>' +
-        '<div class="quota-row"><span class="muted">5h</span><div class="track"><div class="fill ' + (w5 ? 'warn' : '') + '" style="width:' + pct5 + '%"></div></div><span class="' + (w5 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct5 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset5hAt, pct5)) + '</span></div>' +
-        '<div class="quota-row"><span class="muted">7d</span><div class="track"><div class="fill ' + (w7 ? 'warn' : '') + '" style="width:' + pct7 + '%"></div></div><span class="' + (w7 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct7 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset7dAt, pct7)) + '</span></div>' +
+        '<div class="quota-row"><span class="muted">5h</span><div class="track"><div class="fill ' + (w5 ? 'warn' : poolCls) + '" style="width:' + pct5 + '%"></div></div><span class="' + (w5 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct5 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset5hAt, pct5)) + '</span></div>' +
+        '<div class="quota-row"><span class="muted">7d</span><div class="track"><div class="fill ' + (w7 ? 'warn' : poolCls) + '" style="width:' + pct7 + '%"></div></div><span class="' + (w7 ? 'warn-text' : '') + '" style="text-align:right;font-weight:600">' + pct7 + '%</span><span class="muted" style="text-align:right">' + escHtml(fmtReset(p.reset7dAt, pct7)) + '</span></div>' +
       '</div>';
     }).join("");
     if (q.updatedAt) {
@@ -551,7 +570,7 @@ function renderTunnel(t) {
       '<button onclick="tunnelAction(\'disable\')">关闭</button>' +
       '</div>';
   } else if (state === "running") {
-    html = (t.funnelUrl ? '<div class="ep" style="color:var(--green);background:rgba(52,211,153,0.12)">公网 5G：' + escHtml(t.funnelUrl) + '</div>' : '') +
+    html = (t.funnelUrl ? '<div class="ep" style="color:var(--green);background:var(--green-tint);border-color:var(--green-border)">公网 5G：' + escHtml(t.funnelUrl) + '</div>' : '') +
       (t.accountLogin ? '<div class="muted" style="margin-top:6px">已授权账号：' + escHtml(t.accountLogin) + '（已自动写入上方二维码）</div>' : '') +
       '<div class="actions">' +
       '<button onclick="tunnelAction(\'disable\')">关闭 5G 远程</button>' +

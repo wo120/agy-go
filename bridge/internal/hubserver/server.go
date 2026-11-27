@@ -426,13 +426,18 @@ func (s *Server) OnStepsAppended(convID string, steps []brainwatcher.TranscriptS
 	if hasPlanner && s.tps != nil {
 		s.enrichStepsWithSpeed(context.Background(), convID, visible, true)
 	}
+	card, cardErr := s.buildSessionCard(convID)
 	if len(visible) > 0 {
-		s.broadcast("session:"+convID, "step.upsert", map[string]any{
+		payload := map[string]any{
 			"conversationId": convID,
 			"steps":          visible,
-		})
+		}
+		if cardErr == nil {
+			payload["session"] = card
+		}
+		s.broadcast("session:"+convID, "step.upsert", payload)
 	}
-	if card, err := s.buildSessionCard(convID); err == nil {
+	if cardErr == nil {
 		s.broadcast("$global", "session.summary", card)
 		if stats.NeedsConfirm {
 			al := notifier.Alert{
@@ -598,11 +603,16 @@ func (s *Server) syncPendingInteractions(ctx context.Context, emitAlerts bool) {
 	s.pendingMu.Unlock()
 
 	for convID, list := range changedConvs {
-		s.broadcast("session:"+convID, "interaction.updated", map[string]any{
+		payload := map[string]any{
 			"conversationId":      convID,
 			"pendingInteractions": list,
-		})
-		if card, err := s.buildSessionCard(convID); err == nil {
+		}
+		card, cardErr := s.buildSessionCard(convID)
+		if cardErr == nil {
+			payload["session"] = card
+		}
+		s.broadcast("session:"+convID, "interaction.updated", payload)
+		if cardErr == nil {
 			s.broadcast("$global", "session.summary", card)
 		}
 	}
@@ -1083,12 +1093,16 @@ func (s *Server) dispatchRPC(ctx context.Context, req RPCRequest) RPCResponse {
 			return errResp("COMMAND_FAILED", err.Error())
 		}
 		s.syncPendingInteractions(ctx, false)
-		return okResp(map[string]any{
+		respData := map[string]any{
 			"handled":             true,
 			"conversationId":      dec.ConversationID,
 			"stepIndex":           dec.StepIndex,
 			"pendingInteractions": s.pendingForConversation(dec.ConversationID),
-		})
+		}
+		if card, err := s.buildSessionCard(dec.ConversationID); err == nil {
+			respData["session"] = card
+		}
+		return okResp(respData)
 
 	case "sessions.pin":
 		var p struct {

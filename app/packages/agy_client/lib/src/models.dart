@@ -425,6 +425,33 @@ class SessionCard {
       pendingInteractionCount: (json['pendingInteractionCount'] as num?)?.toInt() ?? 0,
     );
   }
+
+  SessionCard copyWith({
+    bool? running,
+    bool? unread,
+    bool? needsConfirm,
+    int? pendingInteractionCount,
+  }) {
+    return SessionCard(
+      conversationId: conversationId,
+      title: title,
+      preview: preview,
+      stepCount: stepCount,
+      lastModifiedUnix: lastModifiedUnix,
+      workspace: workspace,
+      status: status,
+      running: running ?? this.running,
+      subagentCount: subagentCount,
+      artifactCount: artifactCount,
+      model: model,
+      modelDisplay: modelDisplay,
+      pinned: pinned,
+      pinnedOrder: pinnedOrder,
+      unread: unread ?? this.unread,
+      needsConfirm: needsConfirm ?? this.needsConfirm,
+      pendingInteractionCount: pendingInteractionCount ?? this.pendingInteractionCount,
+    );
+  }
 }
 
 class ProjectGroup {

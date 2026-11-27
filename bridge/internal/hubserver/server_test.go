@@ -594,7 +594,7 @@ func TestPendingInteractionsRPCAndWSFlow(t *testing.T) {
 		t.Fatalf("expected HandleCascadeUserInteraction called for conv-auth, got %+v", gotHandleReq)
 	}
 
-	// 3. WS receives interaction.updated clearing the pending list
+	// 3. WS receives interaction.updated clearing the pending list and syncing session.needsConfirm=false
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	sawCleared := false
 	for i := 0; i < 4; i++ {
@@ -605,6 +605,10 @@ func TestPendingInteractionsRPCAndWSFlow(t *testing.T) {
 		if frame.Type == "event" && frame.Event == "interaction.updated" {
 			dataMap := frame.Data.(map[string]any)
 			if list, ok := dataMap["pendingInteractions"].([]any); ok && len(list) == 0 {
+				sessMap, _ := dataMap["session"].(map[string]any)
+				if sessMap == nil || sessMap["needsConfirm"] != false {
+					t.Fatalf("expected interaction.updated to include updated session with needsConfirm=false, got %+v", dataMap["session"])
+				}
 				sawCleared = true
 				break
 			}

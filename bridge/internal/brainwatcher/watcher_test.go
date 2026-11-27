@@ -203,6 +203,43 @@ func TestReadStepsForClientCompactsNoiseAndHandlesLargeLines(t *testing.T) {
 	}
 }
 
+func TestReadStepsForClientPreservesAndNormalizesUpdateSteps(t *testing.T) {
+	tmp := t.TempDir()
+	st, err := statestore.Open(filepath.Join(tmp, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	brainDir := filepath.Join(tmp, "brain")
+	logsDir := filepath.Join(brainDir, "conv-steps", ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	line := `{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-27T05:37:00Z","tool_calls":[{"name":"update_steps","args":{"steps":"[{\"status\":\"done\",\"title\":\"检查服务端\"},{\"status\":\"in_progress\",\"title\":\"更新客户端\"}]","extra":"ignored"}}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := New(brainDir, st, EventCallbacks{})
+	steps, _, err := w.ReadStepsForClient("conv-steps", 0, 50)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("ReadStepsForClient failed: len=%d err=%v", len(steps), err)
+	}
+	tc := steps[0].ToolCalls[0]
+	if tc.Name != "update_steps" {
+		t.Fatalf("expected update_steps, got %q", tc.Name)
+	}
+	if _, hasExtra := tc.Args["extra"]; hasExtra {
+		t.Fatalf("expected extra arg stripped, got %#v", tc.Args)
+	}
+	arr, ok := tc.Args["steps"].([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("expected normalized steps slice of len 2, got %T (%#v)", tc.Args["steps"], tc.Args["steps"])
+	}
+}
+
 func TestCleanUserInputContentAndStepEnrichment(t *testing.T) {
 	cases := []struct {
 		name string

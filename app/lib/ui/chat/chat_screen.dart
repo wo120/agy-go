@@ -81,7 +81,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final desktopOnline = ref.watch(hostConnectionProvider.select((h) => h.desktopOnline));
     final session = chat.session;
     final hasPendingInteraction = chat.pendingInteractions.isNotEmpty;
-    final needsConfirm = !hasPendingInteraction && session?.needsConfirm == true;
+    final needsConfirm = !hasPendingInteraction &&
+        session?.needsConfirm == true &&
+        (session?.pendingInteractionCount ?? 0) == 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -164,6 +166,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       ],
                     ),
                   ),
+                if (chat.todoSteps.isNotEmpty)
+                  _TodoChecklistBanner(steps: chat.todoSteps),
                 Expanded(
                   child: chat.loading
                       ? const Center(
@@ -274,7 +278,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 child: _OneHandFloatingDock(
                   needsConfirm: needsConfirm,
                   showScrollDown: _showScrollToBottom,
-                  onQuickConfirm: () => _send('确认方案，直接开工'),
+                  onQuickConfirm: chat.sending ? null : () => _send('确认方案，直接开工'),
                   onScrollBottom: _scrollToBottom,
                 ),
               ),
@@ -808,7 +812,7 @@ class _ProcessAccordionRowState extends State<_ProcessAccordionRow> {
                         child: Container(
                           padding: const EdgeInsets.only(left: 8),
                           decoration: const BoxDecoration(
-                            border: Border(left: BorderSide(color: AgyColors.borderStrong, width: 2)),
+                            border: Border(left: BorderSide(color: AgyColors.aiAccentBorder, width: 2)),
                           ),
                           child: Text(
                             item.thinking,
@@ -836,7 +840,7 @@ class _OneHandFloatingDock extends StatelessWidget {
 
   final bool needsConfirm;
   final bool showScrollDown;
-  final VoidCallback onQuickConfirm;
+  final VoidCallback? onQuickConfirm;
   final VoidCallback onScrollBottom;
 
   @override
@@ -1313,5 +1317,143 @@ class _PendingInteractionDockState extends State<_PendingInteractionDock> {
         ],
       ),
     );
+  }
+}
+
+class _TodoChecklistBanner extends StatefulWidget {
+  const _TodoChecklistBanner({required this.steps});
+
+  final List<TodoStepItem> steps;
+
+  @override
+  State<_TodoChecklistBanner> createState() => _TodoChecklistBannerState();
+}
+
+class _TodoChecklistBannerState extends State<_TodoChecklistBanner> {
+  bool? _manualExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final doneCount = widget.steps.where((s) => s.status == 'done' || s.status == 'skipped').length;
+    final total = widget.steps.length;
+    final allFinished = total > 0 && doneCount == total;
+    final expanded = _manualExpanded ?? !allFinished;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: ConsolePanel(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        borderRadius: 12,
+        borderColor: AgyColors.borderHairline,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: () => setState(() => _manualExpanded = !expanded),
+              borderRadius: BorderRadius.circular(8),
+              child: Row(
+                children: [
+                  Icon(
+                    allFinished ? Icons.task_alt_rounded : Icons.checklist_rounded,
+                    size: 16,
+                    color: allFinished ? AgyColors.online : AgyColors.accentBright,
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    '待办任务',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: AgyColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: allFinished ? AgyColors.onlineTint : AgyColors.accentTint,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      '$doneCount/$total',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: kTabularFigures,
+                        color: allFinished ? AgyColors.online : AgyColors.accentBright,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    expanded ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    size: 18,
+                    color: AgyColors.textMuted,
+                  ),
+                ],
+              ),
+            ),
+            if (expanded) ...[
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 190),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final item in widget.steps)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(top: 1.5),
+                                child: _statusIcon(item.status),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  item.title,
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    height: 1.35,
+                                    fontWeight: item.status == 'in_progress'
+                                        ? FontWeight.w600
+                                        : FontWeight.w400,
+                                    color: item.status == 'in_progress'
+                                        ? AgyColors.textPrimary
+                                        : (item.status == 'done' || item.status == 'skipped'
+                                            ? AgyColors.textSecondary
+                                            : AgyColors.textPrimary),
+                                    decoration: item.status == 'skipped'
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusIcon(String status) {
+    return switch (status) {
+      'done' => const Icon(Icons.check_circle_outline_rounded, size: 15, color: AgyColors.online),
+      'in_progress' => const Icon(Icons.pending_rounded, size: 15, color: AgyColors.accentBright),
+      'failed' => const Icon(Icons.error_outline_rounded, size: 15, color: AgyColors.danger),
+      'skipped' => const Icon(Icons.remove_circle_outline_rounded, size: 15, color: AgyColors.textMuted),
+      _ => const Icon(Icons.radio_button_unchecked_rounded, size: 15, color: AgyColors.textMuted),
+    };
   }
 }
